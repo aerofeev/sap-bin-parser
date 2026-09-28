@@ -84,7 +84,11 @@ impl Error {
         }
     }
 
-    pub(crate) fn record(message: impl Into<String>, record_index: u64, field: Option<&str>) -> Self {
+    pub(crate) fn record(
+        message: impl Into<String>,
+        record_index: u64,
+        field: Option<&str>,
+    ) -> Self {
         Error::Record {
             message: message.into(),
             record_index,

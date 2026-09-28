@@ -32,3 +32,6 @@ DATA.*.TXT
 
 # Rust
 /target/
+
+# Browser test tooling
+node_modules/

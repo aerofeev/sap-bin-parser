@@ -173,7 +173,10 @@ pub fn decode_text_shard(
                     Some(value) => column.push_unscaled(value, field.decimals),
                     None if options.strict => {
                         return Err(Error::record(
-                            format!("record {record_index}, field {}: {raw:?} is not a number", field.name),
+                            format!(
+                                "record {record_index}, field {}: {raw:?} is not a number",
+                                field.name
+                            ),
                             record_index,
                             Some(&field.name),
                         ))
@@ -233,7 +236,11 @@ pub fn parse_decimal(raw: &str, scale: u32) -> Option<i128> {
     if whole.is_empty() && fraction.is_empty() {
         return None;
     }
-    if !whole.bytes().chain(fraction.bytes()).all(|b| b.is_ascii_digit()) {
+    if !whole
+        .bytes()
+        .chain(fraction.bytes())
+        .all(|b| b.is_ascii_digit())
+    {
         return None;
     }
     let digits = format!("{whole}{fraction}");
@@ -243,7 +250,11 @@ pub fn parse_decimal(raw: &str, scale: u32) -> Option<i128> {
     if digits.len() as i64 + shift.max(0) > 38 {
         return None;
     }
-    let mut value: i128 = if digits.is_empty() { 0 } else { digits.parse().ok()? };
+    let mut value: i128 = if digits.is_empty() {
+        0
+    } else {
+        digits.parse().ok()?
+    };
     if shift >= 0 {
         value = value.checked_mul(10i128.checked_pow(shift as u32)?)?;
     } else {

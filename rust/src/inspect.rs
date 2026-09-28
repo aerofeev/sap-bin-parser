@@ -178,7 +178,11 @@ struct DataSample {
 }
 
 pub fn inspect(sample: Sample<'_>) -> Result<Report> {
-    let preview_rows = if sample.preview_rows == 0 { 20 } else { sample.preview_rows };
+    let preview_rows = if sample.preview_rows == 0 {
+        20
+    } else {
+        sample.preview_rows
+    };
     let mut report = Report {
         kind: Kind::Loose,
         table: archive::table_name(None, sample.name_hint.as_deref()),
@@ -221,23 +225,37 @@ pub fn inspect(sample: Sample<'_>) -> Result<Report> {
                 } else {
                     SAMPLE_BYTES
                 };
-                (info.name.clone(), read_tolerant(&mut reader, limit), info.size)
+                (
+                    info.name.clone(),
+                    read_tolerant(&mut reader, limit),
+                    info.size,
+                )
             };
-            let classified = archive::classify(&inner_name).or_else(|| archive::classify(&info.name));
+            let classified =
+                archive::classify(&inner_name).or_else(|| archive::classify(&info.name));
             match classified {
                 Some((0, _)) => {
                     if schema.is_none() {
-                        let table = archive::table_name(first_member.as_deref(), sample.name_hint.as_deref());
+                        let table = archive::table_name(
+                            first_member.as_deref(),
+                            sample.name_hint.as_deref(),
+                        );
                         schema = Some(Arc::new(Schema::parse_bytes(&bytes, Some(&table))?));
                     }
                 }
                 Some((_, format)) => {
                     data = Some(DataSample {
-                        name: inner_name.rsplit('/').next().unwrap_or(&inner_name).to_owned(),
+                        name: inner_name
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&inner_name)
+                            .to_owned(),
                         format,
                         bytes,
                         size,
-                        stored: info.compressed_size.filter(|_| archive::is_zip_member(&info.name)),
+                        stored: info
+                            .compressed_size
+                            .filter(|_| archive::is_zip_member(&info.name)),
                     });
                     break;
                 }
@@ -335,9 +353,9 @@ fn describe_shards(report: &mut Report, tail: &[u8], total: u64) -> Option<u64> 
         Ok(tail[at..at + len].to_vec())
     });
     let Ok(entries) = entries else {
-        report
-            .notes
-            .push("The archive's central directory could not be read from the end of the file.".into());
+        report.notes.push(
+            "The archive's central directory could not be read from the end of the file.".into(),
+        );
         return None;
     };
     let data: Vec<_> = entries
@@ -353,14 +371,20 @@ fn describe_shards(report: &mut Report, tail: &[u8], total: u64) -> Option<u64> 
 }
 
 /// Scale the first shard's record count by the stored size of all shards.
-fn estimate(report: &mut Report, first: &DataSample, first_stored: Option<u64>, record_size: usize) {
+fn estimate(
+    report: &mut Report,
+    first: &DataSample,
+    first_stored: Option<u64>,
+    record_size: usize,
+) {
     let (Some(shards), Some(size)) = (report.shards.as_ref(), first.size) else {
         return;
     };
     let Some(stored_first) = first.stored.or(first_stored).filter(|&s| s > 0) else {
         return;
     };
-    let estimate = shards.stored_bytes as f64 * size as f64 / stored_first as f64 / record_size as f64;
+    let estimate =
+        shards.stored_bytes as f64 * size as f64 / stored_first as f64 / record_size as f64;
     report.estimated_records = Some(estimate.round() as u64);
     report.estimate_is_exact = shards.count == 1;
 }
@@ -388,7 +412,10 @@ fn preview_bin(
     // after a few records is still caught here rather than mid-conversion.
     let failure = failure.or_else(|| {
         let check = available.min(2_000);
-        decoder.decode(&data.bytes[..check * record_size], 0).err().map(|f| f.error)
+        decoder
+            .decode(&data.bytes[..check * record_size], 0)
+            .err()
+            .map(|f| f.error)
     });
     if let Some(block) = block {
         report.preview = Some(preview(&block, rows));
@@ -415,10 +442,17 @@ fn preview_text(
         .rposition(|&b| b == b'\n')
         .map_or(data.bytes.len(), |i| i + 1);
     let mut first = None;
-    let result = decode_text_shard(&data.bytes[..end], schema, &options, rows, Some(rows as u64), |block| {
-        first.get_or_insert(block);
-        Ok(())
-    });
+    let result = decode_text_shard(
+        &data.bytes[..end],
+        schema,
+        &options,
+        rows,
+        Some(rows as u64),
+        |block| {
+            first.get_or_insert(block);
+            Ok(())
+        },
+    );
     if let Some(block) = first {
         report.preview = Some(preview(&block, rows));
     }
@@ -451,7 +485,9 @@ pub fn preview(block: &Block, rows: usize) -> Preview {
                             Column::Decimal { values, .. } => {
                                 write_decimal(&mut out, values[row], field.decimals)
                             }
-                            Column::Float { values, .. } => write_python_float(&mut out, values[row]),
+                            Column::Float { values, .. } => {
+                                write_python_float(&mut out, values[row])
+                            }
                         }
                         Some(out)
                     })
@@ -461,12 +497,14 @@ pub fn preview(block: &Block, rows: usize) -> Preview {
     }
 }
 
-fn looks_like_sidecar(head: &[u8]) -> bool {
+pub(crate) fn looks_like_sidecar(head: &[u8]) -> bool {
     let head = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
     let line = head.split(|&b| b == b'\n').next().unwrap_or(head);
     let upper = String::from_utf8_lossy(line).to_ascii_uppercase();
     let cells: Vec<&str> = upper.split('\t').map(str::trim).collect();
-    ["NAME", "TYPE", "LENG", "SIZE"].iter().all(|c| cells.contains(c))
+    ["NAME", "TYPE", "LENG", "SIZE"]
+        .iter()
+        .all(|c| cells.contains(c))
 }
 
 fn looks_like_text(head: &[u8], schema: &Schema) -> bool {
@@ -501,7 +539,10 @@ mod tests {
         assert_eq!(report.schema.as_ref().unwrap().record_size, 126);
         assert_eq!(report.shards.as_ref().unwrap().count, 3);
         let estimate = report.estimated_records.unwrap() as f64;
-        assert!((estimate - 150_000.0).abs() / 150_000.0 < 0.05, "{estimate}");
+        assert!(
+            (estimate - 150_000.0).abs() / 150_000.0 < 0.05,
+            "{estimate}"
+        );
         let preview = report.preview.unwrap();
         assert_eq!(preview.rows.len(), 20);
         assert_eq!(preview.rows[0][4].as_deref(), Some("1000000000"));

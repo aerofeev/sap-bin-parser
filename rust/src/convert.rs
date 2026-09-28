@@ -232,6 +232,11 @@ pub enum Input {
     /// A local file: archives are read through their central directory, so
     /// shards come out in index order wherever the sidecar sits.
     File(PathBuf),
+    /// Separate files forming one export: `DATA.N.BIN` / `.TXT` shards,
+    /// nested `DATA.N.zip` shards, and optionally the `DATA.0.TXT` sidecar,
+    /// in order. An unzipped export folder, several uploaded files, or
+    /// several paths on the command line all arrive this way.
+    Files(Box<dyn Entries + Send>),
 }
 
 /// Where the output goes.
@@ -283,6 +288,7 @@ enum Source<'a> {
 
 fn open_source<'a>(input: Input, options: &Options, counter: &'a AtomicU64) -> Result<Source<'a>> {
     match input {
+        Input::Files(entries) => Ok(Source::Archive(entries)),
         Input::File(path) => {
             let mut file = File::open(&path)?;
             let mut magic = [0u8; 4];
@@ -297,9 +303,7 @@ fn open_source<'a>(input: Input, options: &Options, counter: &'a AtomicU64) -> R
                 reader.sort_by_key(|e| archive::member_index(&e.name).unwrap_or(u32::MAX));
                 return Ok(Source::Archive(Box::new(reader)));
             }
-            let text = path
-                .extension()
-                .map(|e| e.eq_ignore_ascii_case("txt"));
+            let text = path.extension().map(|e| e.eq_ignore_ascii_case("txt"));
             Ok(Source::Loose {
                 reader: Box::new(counting),
                 head: Vec::new(),
@@ -317,7 +321,10 @@ fn open_source<'a>(input: Input, options: &Options, counter: &'a AtomicU64) -> R
                 let chained = Cursor::new(head).chain(counting);
                 return Ok(Source::Archive(Box::new(StreamReader::new(chained))));
             }
-            let text_by_name = options.name_hint.as_deref().map(|n| n.to_ascii_lowercase().ends_with(".txt"));
+            let text_by_name = options
+                .name_hint
+                .as_deref()
+                .map(|n| n.to_ascii_lowercase().ends_with(".txt"));
             Ok(Source::Loose {
                 reader: Box::new(counting),
                 head,
@@ -343,29 +350,69 @@ enum Classified {
     Skip,
 }
 
-fn classify_entry(entries: &mut (dyn Entries + Send + '_), name: &str, limit: u64) -> Result<Classified> {
+fn classify_entry(
+    entries: &mut (dyn Entries + Send + '_),
+    name: &str,
+    limit: u64,
+    loose: bool,
+) -> Result<Classified> {
     if archive::is_zip_member(name) {
         let bytes = archive::read_bounded(entries, limit, name)?;
         let (inner, mut reader) = archive::open_inner(&bytes)?;
-        let inner_base = inner.name.rsplit('/').next().unwrap_or(&inner.name).to_owned();
+        let inner_base = inner
+            .name
+            .rsplit('/')
+            .next()
+            .unwrap_or(&inner.name)
+            .to_owned();
         let found = archive::classify(&inner.name).or_else(|| archive::classify(name));
         return Ok(match found {
-            Some((0, _)) => Classified::Sidecar(archive::read_bounded(&mut reader, 64 << 20, "the schema sidecar")?),
+            Some((0, _)) => Classified::Sidecar(archive::read_bounded(
+                &mut reader,
+                64 << 20,
+                "the schema sidecar",
+            )?),
             Some(_) => Classified::Data(Pending::Nested {
+                name: inner_base.into(),
+                bytes,
+            }),
+            None if loose => Classified::Data(Pending::Nested {
                 name: inner_base.into(),
                 bytes,
             }),
             None => Classified::Skip,
         });
     }
-    let base: Arc<str> = name.rsplit('/').next().unwrap_or(name).into();
-    Ok(match archive::classify(name) {
-        Some((0, _)) => Classified::Sidecar(archive::read_bounded(entries, 64 << 20, "the schema sidecar")?),
+    let base: Arc<str> = name.rsplit(['/', '\\']).next().unwrap_or(name).into();
+    let found = archive::classify(name).or_else(|| {
+        // Separately supplied files need not follow the DATA.N naming.
+        loose.then(|| {
+            let text = name.to_ascii_lowercase().ends_with(".txt");
+            (
+                u32::MAX,
+                if text {
+                    ShardFormat::Text
+                } else {
+                    ShardFormat::Bin
+                },
+            )
+        })
+    });
+    Ok(match found {
+        Some((0, _)) => Classified::Sidecar(archive::read_bounded(
+            entries,
+            64 << 20,
+            "the schema sidecar",
+        )?),
         Some((_, ShardFormat::Bin)) => Classified::Data(Pending::Bin { name: base }),
-        Some((_, ShardFormat::Text)) => Classified::Data(Pending::Text {
-            name: base,
-            bytes: archive::read_bounded(entries, limit, name)?,
-        }),
+        Some((_, ShardFormat::Text)) => {
+            let bytes = archive::read_bounded(entries, limit, name)?;
+            if loose && crate::inspect::looks_like_sidecar(&bytes) {
+                Classified::Sidecar(bytes)
+            } else {
+                Classified::Data(Pending::Text { name: base, bytes })
+            }
+        }
         None => Classified::Skip,
     })
 }
@@ -389,6 +436,8 @@ enum Payload {
 
 enum Chunk {
     Data(Encoded),
+    /// Records decoded just before a failure; an error always follows.
+    Partial(Encoded),
     Failed(u64),
     Warning(String),
     Error(Error),
@@ -496,7 +545,9 @@ fn decode_records(
                         .decoder
                         .decode(&slice[..failure.row * size], first)
                         .map_err(|f| f.error)?;
-                    out.send(ctx.encode(good)?);
+                    if let Chunk::Data(encoded) = ctx.encode(good)? {
+                        out.send(Chunk::Partial(encoded));
+                    }
                 }
                 return Err(failure.error);
             }
@@ -509,7 +560,13 @@ fn decode_records(
     Ok(Some(first_record + total as u64))
 }
 
-fn trailing_bytes(name: &str, trailing: usize, records: u64, ctx: &Context<'_>, out: &JobOut<'_>) -> Result<()> {
+fn trailing_bytes(
+    name: &str,
+    trailing: usize,
+    records: u64,
+    ctx: &Context<'_>,
+    out: &JobOut<'_>,
+) -> Result<()> {
     if trailing == 0 {
         return Ok(());
     }
@@ -531,7 +588,9 @@ fn process(job: &Job, ctx: &Context<'_>, out: &JobOut<'_>) -> Result<()> {
         Payload::Records(data) => {
             let done = decode_records(data, job.first_record, &mut remaining, ctx, out)?;
             match done {
-                Some(records) if job.last => trailing_bytes(&job.name, job.trailing, records, ctx, out),
+                Some(records) if job.last => {
+                    trailing_bytes(&job.name, job.trailing, records, ctx, out)
+                }
                 _ => Ok(()),
             }
         }
@@ -596,6 +655,7 @@ fn run_writer(
     split: bool,
     progress: &Progress,
     abort: &AtomicBool,
+    ready: &mut dyn FnMut(),
 ) -> Result<WriterOutcome> {
     let mut outcome = WriterOutcome {
         records: 0,
@@ -620,8 +680,11 @@ fn run_writer(
             shard_rows = 0;
         }
         for chunk in chunks.iter() {
+            let partial = matches!(chunk, Chunk::Partial(_));
             match chunk {
-                Chunk::Data(encoded) => {
+                Chunk::Data(encoded) | Chunk::Partial(encoded) => {
+                    // Output that is about to be followed by an error does not
+                    // count as a successful start.
                     let used = if split { shard_rows } else { outcome.records };
                     let allowed = limit.map_or(u64::MAX, |l| l.saturating_sub(used));
                     let encoded = if (encoded.rows() as u64) > allowed {
@@ -631,6 +694,9 @@ fn run_writer(
                     };
                     let rows = encoded.rows() as u64;
                     if rows > 0 {
+                        if !partial {
+                            ready();
+                        }
                         if let Err(e) = sink.write(encoded) {
                             return fail(e);
                         }
@@ -664,12 +730,14 @@ fn run_writer(
         if open {
             sink.end_shard()?;
             outcome.shards += 1;
+            progress.shards.fetch_add(1, Ordering::Relaxed);
         }
     } else if abort.load(Ordering::SeqCst) || progress.is_cancelled() {
         // The producer failed or the conversion was cancelled: leave the
         // output unfinished rather than make it look complete.
         return Err(Error::Cancelled);
     }
+    ready();
     sink.finish()?;
     Ok(outcome)
 }
@@ -695,7 +763,13 @@ impl Producer<'_> {
     }
 
     /// Queue a job. False means stop producing.
-    fn submit(&mut self, ticket: Ticket, payload: Payload, first_record: u64, trailing: usize) -> bool {
+    fn submit(
+        &mut self,
+        ticket: Ticket,
+        payload: Payload,
+        first_record: u64,
+        trailing: usize,
+    ) -> bool {
         if self.stopped() {
             return false;
         }
@@ -721,7 +795,12 @@ impl Producer<'_> {
     }
 
     /// Stream a `.BIN` shard in record-aligned chunks.
-    fn records(&mut self, name: Arc<str>, reader: &mut (dyn Read + Send + '_), head: Vec<u8>) -> Result<bool> {
+    fn records(
+        &mut self,
+        name: Arc<str>,
+        reader: &mut (dyn Read + Send + '_),
+        head: Vec<u8>,
+    ) -> Result<bool> {
         let size = self.record_size;
         let chunk = size * (CHUNK_BYTES / size).max(1);
         let mut first = 0u64;
@@ -740,14 +819,20 @@ impl Producer<'_> {
             let rows = (whole / size) as u64;
 
             let shard_capped = self.split && self.limit.is_some_and(|l| first + rows >= l);
-            let merged_capped = !self.split && self.limit.is_some_and(|l| self.submitted + rows >= l);
+            let merged_capped =
+                !self.split && self.limit.is_some_and(|l| self.submitted + rows >= l);
             let ends = at_end || shard_capped || merged_capped;
             let ticket = Ticket {
                 name: name.clone(),
                 begins,
                 ends,
             };
-            if !self.submit(ticket, Payload::Records(buf), first, if at_end { trailing } else { 0 }) {
+            if !self.submit(
+                ticket,
+                Payload::Records(buf),
+                first,
+                if at_end { trailing } else { 0 },
+            ) {
                 return Ok(false);
             }
             first += rows;
@@ -762,17 +847,20 @@ impl Producer<'_> {
 
 /// Convert `input` to `output`.
 ///
-/// `on_ready` runs once the schema is known and the input has been checked,
-/// before any output is written; the web service uses it to decide between
-/// an error response and a streamed download.
+/// `on_ready` runs once the first block of records has decoded (or the input
+/// turned out to hold none), before any records are written. The web service
+/// uses it to choose between an error response and a streamed download, so
+/// the commonest failure, a wrong record size, is reported as a clear error
+/// instead of a truncated download.
 pub fn convert(
     input: Input,
     output: Output,
     options: &Options,
     progress: &Progress,
-    on_ready: impl FnOnce(&Meta),
+    on_ready: impl FnOnce(&Meta) + Send,
 ) -> Result<Stats> {
     let started = Instant::now();
+    let separate_files = matches!(input, Input::Files(_));
     let source = open_source(input, options, &progress.bytes_in)?;
     let mut schema = options.schema.clone().map(Arc::new);
     let mut table = archive::table_name(None, options.name_hint.as_deref());
@@ -792,11 +880,19 @@ pub fn convert(
                 if info.is_dir() {
                     continue;
                 }
-                match classify_entry(reader.as_mut(), &info.name, options.max_shard_bytes)? {
+                match classify_entry(
+                    reader.as_mut(),
+                    &info.name,
+                    options.max_shard_bytes,
+                    separate_files,
+                )? {
                     Classified::Skip => {}
                     Classified::Sidecar(bytes) => {
                         if schema.is_none() {
-                            let name = archive::table_name(first_member.as_deref(), options.name_hint.as_deref());
+                            let name = archive::table_name(
+                                first_member.as_deref(),
+                                options.name_hint.as_deref(),
+                            );
                             schema = Some(Arc::new(Schema::parse_bytes(&bytes, Some(&name))?));
                         }
                     }
@@ -817,7 +913,8 @@ pub fn convert(
             table = archive::table_name(first_member.as_deref(), options.name_hint.as_deref());
             if schema.is_none() {
                 return Err(Error::Archive(
-                    "the archive contains no DATA.0.TXT schema sidecar; supply a schema explicitly".into(),
+                    "the archive contains no DATA.0.TXT schema sidecar; supply a schema explicitly"
+                        .into(),
                 ));
             }
             if pending.is_none() {
@@ -868,11 +965,12 @@ pub fn convert(
         }
     };
 
-    on_ready(&Meta {
+    let meta = Meta {
         table: table.clone(),
         schema: schema.clone(),
         archive: is_archive,
-    });
+    };
+    let mut ready = Some(move || on_ready(&meta));
 
     // Phase 2: run the pipeline.
     let abort = AtomicBool::new(false);
@@ -890,7 +988,22 @@ pub fn convert(
         let (job_tx, job_rx) = bounded::<Job>(workers);
         let (order_tx, order_rx) = bounded(workers * 2 + 2);
         let (limit, split, abort_ref) = (options.limit, options.split, &abort);
-        let writer = scope.spawn(move || run_writer(sink, order_rx, limit, split, progress, abort_ref));
+        let writer = scope.spawn(move || {
+            let mut announce = || {
+                if let Some(ready) = ready.take() {
+                    ready();
+                }
+            };
+            run_writer(
+                sink,
+                order_rx,
+                limit,
+                split,
+                progress,
+                abort_ref,
+                &mut announce,
+            )
+        });
         for _ in 0..workers {
             let jobs = job_rx.clone();
             let ctx = &ctx;
@@ -908,7 +1021,14 @@ pub fn convert(
             abort: &abort,
             progress,
         };
-        let produced = produce(&mut producer, entries, loose, pending, options);
+        let produced = produce(
+            &mut producer,
+            entries,
+            loose,
+            pending,
+            options,
+            separate_files,
+        );
         if produced.is_err() {
             abort.store(true, Ordering::SeqCst);
         }
@@ -951,6 +1071,7 @@ fn produce(
     loose: Option<(Box<dyn Read + Send + '_>, Vec<u8>, bool)>,
     pending: Option<Pending>,
     options: &Options,
+    separate_files: bool,
 ) -> Result<()> {
     if let Some((mut reader, head, text)) = loose {
         let name: Arc<str> = options
@@ -960,7 +1081,8 @@ fn produce(
             .into();
         if text {
             let mut bytes = head;
-            archive::read_bounded(&mut reader, options.max_shard_bytes, &name).map(|rest| bytes.extend(rest))?;
+            archive::read_bounded(&mut reader, options.max_shard_bytes, &name)
+                .map(|rest| bytes.extend(rest))?;
             producer.whole(name, Payload::Text(bytes));
         } else {
             producer.records(name, reader.as_mut(), head)?;
@@ -988,7 +1110,12 @@ fn produce(
             if info.is_dir() {
                 continue;
             }
-            if let Classified::Data(found) = classify_entry(entries.as_mut(), &info.name, options.max_shard_bytes)? {
+            if let Classified::Data(found) = classify_entry(
+                entries.as_mut(),
+                &info.name,
+                options.max_shard_bytes,
+                separate_files,
+            )? {
                 next = Some(found);
                 break;
             }
@@ -1033,7 +1160,9 @@ pub fn convert_bytes(input: Vec<u8>, options: &Options) -> Result<(Vec<u8>, Stat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sample::{build_archive, bsis_rows, encode_bsis_records, encode_file, sample_archive, BSIS_SIDECAR};
+    use crate::sample::{
+        bsis_rows, build_archive, encode_bsis_records, encode_file, sample_archive, BSIS_SIDECAR,
+    };
 
     fn bsis() -> Schema {
         Schema::parse(BSIS_SIDECAR, Some("BSIS")).unwrap()
@@ -1077,7 +1206,11 @@ mod tests {
             let (out, stats) = convert_bytes(archive.clone(), &options).unwrap();
             assert_eq!(stats.records, 240_000);
             let text = String::from_utf8(out).unwrap();
-            let belnr: Vec<&str> = text.lines().skip(1).map(|l| l.split(',').nth(4).unwrap()).collect();
+            let belnr: Vec<&str> = text
+                .lines()
+                .skip(1)
+                .map(|l| l.split(',').nth(4).unwrap())
+                .collect();
             // Each shard restarts at 1000000000 and increments.
             assert_eq!(belnr[0], "1000000000");
             assert_eq!(belnr[39_999], "1000039999");
@@ -1126,7 +1259,11 @@ mod tests {
             ..Options::default()
         };
         let err = convert_bytes(data.clone(), &options).unwrap_err();
-        assert!(err.to_string().contains("3 trailing byte(s) after 3 records"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("3 trailing byte(s) after 3 records"),
+            "{err}"
+        );
         let lenient = Options {
             on_error: OnError::Skip,
             ..options
@@ -1162,6 +1299,8 @@ mod tests {
         let archive = build_archive(BSIS_SIDECAR, "BSIS", "TXT", &[shard.as_bytes().to_vec()]);
         let (out, stats) = convert_bytes(archive, &Options::default()).unwrap();
         assert_eq!(stats.records, 1);
-        assert!(String::from_utf8(out).unwrap().ends_with("2025-06-01,PR,47.12\r\n"));
+        assert!(String::from_utf8(out)
+            .unwrap()
+            .ends_with("2025-06-01,PR,47.12\r\n"));
     }
 }

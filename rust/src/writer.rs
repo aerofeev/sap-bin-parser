@@ -100,7 +100,12 @@ fn json_string(out: &mut Vec<u8>, value: &[u8]) {
 /// Append a block as CSV or JSON Lines. When `row_ends` is given, the end
 /// offset of every row is recorded, so an output can be cut at an exact
 /// row count.
-pub fn encode_text(block: &Block, kind: TextKind, out: &mut Vec<u8>, mut row_ends: Option<&mut Vec<u32>>) {
+pub fn encode_text(
+    block: &Block,
+    kind: TextKind,
+    out: &mut Vec<u8>,
+    mut row_ends: Option<&mut Vec<u32>>,
+) {
     let fields = block.schema.fields();
     let names: Vec<Vec<u8>> = fields
         .iter()
@@ -231,7 +236,10 @@ pub fn to_record_batch(block: Block, schema: &SchemaRef) -> Result<RecordBatch> 
                 values,
                 valid,
                 nulls: count,
-            } => Arc::new(Float64Array::new(ScalarBuffer::from(values), nulls(&valid, count))),
+            } => Arc::new(Float64Array::new(
+                ScalarBuffer::from(values),
+                nulls(&valid, count),
+            )),
         };
         arrays.push(array);
     }
@@ -300,7 +308,11 @@ impl Encoded {
                 ..
             } => {
                 let ends = row_ends.expect("row offsets are recorded whenever a limit is set");
-                bytes.truncate(if rows == 0 { 0 } else { ends[rows - 1] as usize });
+                bytes.truncate(if rows == 0 {
+                    0
+                } else {
+                    ends[rows - 1] as usize
+                });
                 Encoded::Text {
                     bytes,
                     rows,
@@ -545,7 +557,12 @@ mod tests {
     fn csv_matches_python_byte_for_byte() {
         let block = block(DecimalMode::Exact);
         let mut out = Vec::new();
-        text_header(&block.schema, TextKind::Csv { delimiter: b',' }, false, &mut out);
+        text_header(
+            &block.schema,
+            TextKind::Csv { delimiter: b',' },
+            false,
+            &mut out,
+        );
         encode_text(&block, TextKind::Csv { delimiter: b',' }, &mut out, None);
         let expected = "BUKRS,HKONT,ZUONR,GJAHR,BELNR,BUZEI,BUDAT,BLART,DMBTR\r\n\
             0100,0000123456,20250616,2025,1000000001,001,2025-06-16,PR,0.50\r\n\

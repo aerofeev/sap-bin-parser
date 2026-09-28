@@ -216,7 +216,13 @@ struct Active {
 }
 
 impl Active {
-    fn new(info: EntryInfo, flags: u16, crc: u32, zip64: bool, sizes_known: bool) -> io::Result<Self> {
+    fn new(
+        info: EntryInfo,
+        flags: u16,
+        crc: u32,
+        zip64: bool,
+        sizes_known: bool,
+    ) -> io::Result<Self> {
         if flags & FLAG_ENCRYPTED != 0 {
             return Err(invalid(format!(
                 "{} is encrypted; remove the password and try again",
@@ -288,7 +294,9 @@ impl Active {
                 let (before_in, before_out) = (inflater.total_in(), inflater.total_out());
                 let status = inflater
                     .decompress(slice, out, FlushDecompress::None)
-                    .map_err(|e| invalid(format!("{}: corrupt deflate data ({e})", self.info.name)))?;
+                    .map_err(|e| {
+                        invalid(format!("{}: corrupt deflate data ({e})", self.info.name))
+                    })?;
                 let consumed = (inflater.total_in() - before_in) as usize;
                 let produced = (inflater.total_out() - before_out) as usize;
                 let exhausted = slice.is_empty();
@@ -324,7 +332,11 @@ impl Active {
     /// A STORED entry of unknown length ends at a data descriptor whose CRC
     /// and size match everything before it. A descriptor signature that does
     /// not check out is ordinary data.
-    fn read_scanning<R: Read>(&mut self, input: &mut ByteReader<R>, out: &mut [u8]) -> io::Result<usize> {
+    fn read_scanning<R: Read>(
+        &mut self,
+        input: &mut ByteReader<R>,
+        out: &mut [u8],
+    ) -> io::Result<usize> {
         enum Step {
             Emit(usize),
             End { data: usize, crc: u32 },
@@ -340,7 +352,11 @@ impl Active {
                 if got.len() < p + need {
                     // Too little lookahead to judge this candidate; everything
                     // before it is certainly data.
-                    step = Some(if p > 0 { Step::Emit(p) } else { return Err(truncated()) });
+                    step = Some(if p > 0 {
+                        Step::Emit(p)
+                    } else {
+                        return Err(truncated());
+                    });
                     break;
                 }
                 let crc = le32(&got[p + 4..]);
@@ -548,7 +564,8 @@ impl<R: Read> Entries for StreamReader<R> {
         let extra_len = le16(&header[28..]) as usize;
         let name = decode_name(&self.input.take(name_len)?, flags);
         let extra = self.input.take(extra_len)?;
-        let (zip64, values) = zip64_extra(&extra, [size == u32::MAX, compressed == u32::MAX, false]);
+        let (zip64, values) =
+            zip64_extra(&extra, [size == u32::MAX, compressed == u32::MAX, false]);
         let info = EntryInfo {
             name,
             method,
@@ -599,14 +616,18 @@ pub fn read_central_directory(
     let at = (0..tail.len().saturating_sub(21))
         .rev()
         .find(|&i| le32(&tail[i..]) == END_OF_CENTRAL)
-        .ok_or_else(|| invalid("no zip central directory found; the file is not a complete zip archive"))?;
+        .ok_or_else(|| {
+            invalid("no zip central directory found; the file is not a complete zip archive")
+        })?;
     let eocd = &tail[at..];
     let mut count = le16(&eocd[10..]) as u64;
     let mut cd_size = le32(&eocd[12..]) as u64;
     let mut cd_offset = le32(&eocd[16..]) as u64;
     let eocd_pos = total - window as u64 + at as u64;
 
-    if (count == 0xFFFF || cd_size == u32::MAX as u64 || cd_offset == u32::MAX as u64) && eocd_pos >= 20 {
+    if (count == 0xFFFF || cd_size == u32::MAX as u64 || cd_offset == u32::MAX as u64)
+        && eocd_pos >= 20
+    {
         let locator = read_at(eocd_pos - 20, 20)?;
         if le32(&locator) == ZIP64_LOCATOR {
             let record = read_at(le64(&locator[8..]), 56)?;
@@ -722,7 +743,13 @@ impl<R: Read + Seek> Entries for IndexedReader<R> {
             size: Some(entry.size),
             compressed_size: Some(entry.compressed_size),
         };
-        self.active = Some(Active::new(info.clone(), entry.flags, entry.crc, false, true)?);
+        self.active = Some(Active::new(
+            info.clone(),
+            entry.flags,
+            entry.crc,
+            false,
+            true,
+        )?);
         Ok(Some(info))
     }
 }
@@ -825,7 +852,11 @@ impl<W: Write> ZipWriter<W> {
         };
         let record = Record {
             name: name.to_owned(),
-            method: if method == ZipMethod::Stored { METHOD_STORED } else { METHOD_DEFLATE },
+            method: if method == ZipMethod::Stored {
+                METHOD_STORED
+            } else {
+                METHOD_DEFLATE
+            },
             flags: FLAG_UTF8,
             crc,
             compressed: payload.len() as u64,
@@ -901,7 +932,14 @@ impl<W: Write> ZipWriter<W> {
             let mut h = Vec::with_capacity(46 + r.name.len() + extra.len());
             h.extend_from_slice(&CENTRAL_HEADER.to_le_bytes());
             h.extend_from_slice(&0x031Eu16.to_le_bytes()); // made by: Unix, 3.0
-            h.extend_from_slice(&(if needs64 || r.flags & FLAG_DESCRIPTOR != 0 { 45u16 } else { 20u16 }).to_le_bytes());
+            h.extend_from_slice(
+                &(if needs64 || r.flags & FLAG_DESCRIPTOR != 0 {
+                    45u16
+                } else {
+                    20u16
+                })
+                .to_le_bytes(),
+            );
             h.extend_from_slice(&r.flags.to_le_bytes());
             h.extend_from_slice(&r.method.to_le_bytes());
             h.extend_from_slice(&self.time.to_le_bytes());
@@ -914,7 +952,11 @@ impl<W: Write> ZipWriter<W> {
             h.extend_from_slice(&0u16.to_le_bytes()); // comment
             h.extend_from_slice(&0u16.to_le_bytes()); // disk
             h.extend_from_slice(&0u16.to_le_bytes()); // internal attributes
-            let mode: u32 = if r.name.ends_with('/') { 0o40755 } else { 0o100644 };
+            let mode: u32 = if r.name.ends_with('/') {
+                0o40755
+            } else {
+                0o100644
+            };
             h.extend_from_slice(&(mode << 16).to_le_bytes());
             h.extend_from_slice(&clamp(r.offset).to_le_bytes());
             h.extend_from_slice(r.name.as_bytes());
@@ -995,8 +1037,8 @@ fn dos_now() -> (u16, u16) {
     if !(1980..=2107).contains(&year) {
         return (0, 0x21);
     }
-    let time = ((rem / 3600) << 11 | ((rem % 3600) / 60) << 5 | (rem % 60) / 2) as u16;
-    let date = ((year - 1980) << 9 | month << 5 | day) as u16;
+    let time = (((rem / 3600) << 11) | (((rem % 3600) / 60) << 5) | ((rem % 60) / 2)) as u16;
+    let date = (((year - 1980) << 9) | (month << 5) | day) as u16;
     (time, date)
 }
 
@@ -1023,8 +1065,10 @@ mod tests {
     fn round_trips_whole_entries() {
         let mut w = ZipWriter::new(Vec::new());
         w.add("a/", ZipMethod::Stored, b"").unwrap();
-        w.add("a/one.bin", ZipMethod::Stored, &payload(1000)).unwrap();
-        w.add("a/two.bin", ZipMethod::Deflate, &payload(300_000)).unwrap();
+        w.add("a/one.bin", ZipMethod::Stored, &payload(1000))
+            .unwrap();
+        w.add("a/two.bin", ZipMethod::Deflate, &payload(300_000))
+            .unwrap();
         let bytes = w.finish().unwrap();
 
         let streamed = read_all(&mut StreamReader::new(Cursor::new(&bytes)));

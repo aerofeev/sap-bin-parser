@@ -16,6 +16,7 @@ pub mod archive;
 pub mod convert;
 pub mod decode;
 pub mod error;
+pub mod files;
 pub mod inspect;
 pub mod probe;
 pub mod sample;

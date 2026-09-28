@@ -91,9 +91,9 @@ impl Column {
 
     pub fn len(&self) -> usize {
         match self {
-            Column::Text { valid, .. } | Column::Decimal { valid, .. } | Column::Float { valid, .. } => {
-                valid.len()
-            }
+            Column::Text { valid, .. }
+            | Column::Decimal { valid, .. }
+            | Column::Float { valid, .. } => valid.len(),
         }
     }
 
@@ -103,17 +103,17 @@ impl Column {
 
     pub fn null_count(&self) -> usize {
         match self {
-            Column::Text { nulls, .. } | Column::Decimal { nulls, .. } | Column::Float { nulls, .. } => {
-                *nulls
-            }
+            Column::Text { nulls, .. }
+            | Column::Decimal { nulls, .. }
+            | Column::Float { nulls, .. } => *nulls,
         }
     }
 
     pub fn is_valid(&self, row: usize) -> bool {
         match self {
-            Column::Text { valid, .. } | Column::Decimal { valid, .. } | Column::Float { valid, .. } => {
-                valid[row]
-            }
+            Column::Text { valid, .. }
+            | Column::Decimal { valid, .. }
+            | Column::Float { valid, .. } => valid[row],
         }
     }
 
@@ -140,12 +140,20 @@ impl Column {
                 valid.push(false);
                 *nulls += 1;
             }
-            Column::Decimal { values, valid, nulls } => {
+            Column::Decimal {
+                values,
+                valid,
+                nulls,
+            } => {
                 values.push(0);
                 valid.push(false);
                 *nulls += 1;
             }
-            Column::Float { values, valid, nulls } => {
+            Column::Float {
+                values,
+                valid,
+                nulls,
+            } => {
                 values.push(0.0);
                 valid.push(false);
                 *nulls += 1;
@@ -625,7 +633,10 @@ pub fn pack_decimal(unscaled: i128, size: usize) -> std::result::Result<Vec<u8>,
         .chain(digits.bytes().map(|b| b - b'0'))
         .collect();
     nibbles.push(if unscaled < 0 { 0x0D } else { 0x0C });
-    Ok(nibbles.chunks(2).map(|pair| (pair[0] << 4) | pair[1]).collect())
+    Ok(nibbles
+        .chunks(2)
+        .map(|pair| (pair[0] << 4) | pair[1])
+        .collect())
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {

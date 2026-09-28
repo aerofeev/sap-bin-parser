@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use crate::decode::pack_decimal;
 use crate::schema::{FieldType, Schema};
-use crate::zip::{ZipWriter, ZipMethod};
+use crate::zip::{ZipMethod, ZipWriter};
 
 /// The BSIS layout, as the sidecar of a real export declares it. Field
 /// widths sum to 125 bytes, so records are padded to 126.

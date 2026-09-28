@@ -362,6 +362,9 @@ mod tests {
     fn flags_a_sidecar_whose_size_disagrees() {
         let schema = Schema::from_tuples([("A", "C", 4, 0, 9)], None).unwrap();
         assert!(schema.inconsistencies()[0].starts_with("A: SIZE=9"));
-        assert!(Schema::parse(BSIS_SIDECAR, None).unwrap().inconsistencies().is_empty());
+        assert!(Schema::parse(BSIS_SIDECAR, None)
+            .unwrap()
+            .inconsistencies()
+            .is_empty());
     }
 }

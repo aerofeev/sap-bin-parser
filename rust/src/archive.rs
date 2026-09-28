@@ -15,7 +15,7 @@
 use std::io::{Cursor, Read};
 
 use crate::error::{Error, Result};
-use crate::zip::{EntryInfo, Entries, StreamReader};
+use crate::zip::{Entries, EntryInfo, StreamReader};
 
 /// The two data formats a shard can be in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -97,6 +97,17 @@ pub fn open_inner(bytes: &[u8]) -> Result<(EntryInfo, StreamReader<Cursor<&[u8]>
     }
 }
 
+/// Parse a schema supplied on its own: a `DATA.0.TXT`, or the `DATA.0.zip`
+/// it arrives in.
+pub fn schema_from_bytes(bytes: &[u8], name: Option<&str>) -> Result<crate::schema::Schema> {
+    if bytes.starts_with(b"PK\x03\x04") {
+        let (_, mut reader) = open_inner(bytes)?;
+        let text = read_bounded(&mut reader, 64 << 20, "the schema sidecar")?;
+        return crate::schema::Schema::parse_bytes(&text, name);
+    }
+    crate::schema::Schema::parse_bytes(bytes, name)
+}
+
 /// Read a whole entry, refusing more than `limit` bytes.
 pub fn read_bounded(reader: &mut (impl Read + ?Sized), limit: u64, what: &str) -> Result<Vec<u8>> {
     let mut out = Vec::new();
@@ -127,7 +138,10 @@ mod tests {
     #[test]
     fn names_tables() {
         assert_eq!(table_name(Some("BSIS.QUERY/"), None), "BSIS");
-        assert_eq!(table_name(Some("DATA.1.BIN"), Some("BSIM.QUERY.zip")), "BSIM");
+        assert_eq!(
+            table_name(Some("DATA.1.BIN"), Some("BSIM.QUERY.zip")),
+            "BSIM"
+        );
         assert_eq!(table_name(None, None), "export");
     }
 }

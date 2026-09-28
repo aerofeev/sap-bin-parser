@@ -26,7 +26,12 @@ pub struct Candidate {
 /// Score `payload .. payload + 8` against the first `sample_records`
 /// records of `sample`, best first. `total_size` is the full size of the
 /// data the sample was taken from, if known.
-pub fn probe(sample: &[u8], schema: &Arc<Schema>, total_size: Option<u64>, sample_records: usize) -> Vec<Candidate> {
+pub fn probe(
+    sample: &[u8],
+    schema: &Arc<Schema>,
+    total_size: Option<u64>,
+    sample_records: usize,
+) -> Vec<Candidate> {
     let payload = schema.payload_size();
     let mut results: Vec<Candidate> = (payload..payload + 8)
         .map(|size| {
@@ -44,9 +49,8 @@ pub fn probe(sample: &[u8], schema: &Arc<Schema>, total_size: Option<u64>, sampl
             }
         })
         .collect();
-    results.sort_by_key(|c| {
-        std::cmp::Reverse((c.divides_evenly.unwrap_or(false), c.clean_records))
-    });
+    results
+        .sort_by_key(|c| std::cmp::Reverse((c.divides_evenly.unwrap_or(false), c.clean_records)));
     results
 }
 
