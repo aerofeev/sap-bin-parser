@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sap-bin-parser"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Parse SAP fixed-width binary table exports (.BIN) into CSV or Parquet"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,7 +27,7 @@ dependencies = []
 [project.optional-dependencies]
 parquet = ["pyarrow>=14"]
 arrow = ["pyarrow>=14"]
-dev = ["pytest>=8", "pyarrow>=14", "ruff>=0.6"]
+dev = ["pytest>=8", "pyarrow>=14", "ruff>=0.6", "httpx>=0.27"]
 
 [project.scripts]
 sap-bin = "sap_bin_parser.cli:main"
@@ -36,8 +36,14 @@ sap-bin = "sap_bin_parser.cli:main"
 Homepage = "https://github.com/aerofeev/sap-bin-parser"
 Issues = "https://github.com/aerofeev/sap-bin-parser/issues"
 
+[tool.hatch.version]
+path = "src/sap_bin_parser/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/sap_bin_parser"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/rust", "/web", "/deploy", "/.github", "/bench", "/docs"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

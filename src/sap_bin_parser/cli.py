@@ -155,9 +155,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
             archive.close()
 
 
-def _iter_rows(
-    reader: BinReader, *, limit: int | None, on_error: str
-) -> Iterator[dict[str, Any]]:
+def _iter_rows(reader: BinReader, *, limit: int | None, on_error: str) -> Iterator[dict[str, Any]]:
     """Yield rows, honouring ``--limit`` and ``--on-error``."""
     skipped = 0
     try:

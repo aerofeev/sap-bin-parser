@@ -10,7 +10,7 @@ from typing import Any
 
 from .schema import Schema
 
-__all__ = ["write_csv", "write_parquet", "ConversionStats"]
+__all__ = ["write_csv", "write_parquet", "ConversionStats", "arrow_schema"]
 
 _PARQUET_BATCH = 50_000
 
@@ -92,20 +92,20 @@ def write_parquet(
 
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    arrow_schema = _arrow_schema(schema, decimal_as_float=decimal_as_float)
+    target = arrow_schema(schema, decimal_as_float=decimal_as_float)
 
     count = 0
     writer = None
     try:
         for batch_rows in _batched(rows, batch_size):
-            batch = pa.RecordBatch.from_pylist(batch_rows, schema=arrow_schema)
+            batch = pa.RecordBatch.from_pylist(batch_rows, schema=target)
             if writer is None:
-                writer = pq.ParquetWriter(destination, arrow_schema, compression=compression)
+                writer = pq.ParquetWriter(destination, target, compression=compression)
             writer.write_batch(batch)
             count += len(batch_rows)
         if writer is None:
             # No rows: still emit a valid, empty, correctly-typed file.
-            writer = pq.ParquetWriter(destination, arrow_schema, compression=compression)
+            writer = pq.ParquetWriter(destination, target, compression=compression)
     finally:
         if writer is not None:
             writer.close()
@@ -113,7 +113,14 @@ def write_parquet(
     return ConversionStats(rows=count, path=destination)
 
 
-def _arrow_schema(schema: Schema, *, decimal_as_float: bool):
+def arrow_schema(schema: Schema, *, decimal_as_float: bool = False):
+    """The Arrow schema a SAP schema maps to. Requires ``pyarrow``.
+
+    Text-like fields (``C``, ``N``, ``D``, ``T``) are strings; packed decimals
+    are ``decimal128`` with the precision a field of that byte size can hold,
+    or ``float64`` when asked. The Rust engine builds the same schema, so
+    Parquet from either implementation is interchangeable.
+    """
     import pyarrow as pa
 
     fields = []

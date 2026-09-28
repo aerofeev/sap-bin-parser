@@ -142,8 +142,7 @@ class SapArchive:
                 text = self.read_shard(shard).decode("utf-8-sig", errors="replace")
                 return parse_schema(text, name=self.table_name)
         raise ArchiveError(
-            f"{self.path.name} contains no DATA.*.TXT schema sidecar; "
-            "supply a schema explicitly"
+            f"{self.path.name} contains no DATA.*.TXT schema sidecar; supply a schema explicitly"
         )
 
     @property

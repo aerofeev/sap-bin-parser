@@ -172,34 +172,18 @@ class BinReader:
                 "to_arrow() needs pyarrow; install sap-bin-parser[arrow]"
             ) from exc
 
+        from .writers import arrow_schema
+
+        target = arrow_schema(self.schema, decimal_as_float=self.decimal_as_float)
         batches, buffer = [], []
         for row in self:
             buffer.append(row)
             if len(buffer) >= batch_size:
-                batches.append(pa.RecordBatch.from_pylist(buffer, schema=self._arrow_schema()))
+                batches.append(pa.RecordBatch.from_pylist(buffer, schema=target))
                 buffer = []
         if buffer or not batches:
-            batches.append(pa.RecordBatch.from_pylist(buffer, schema=self._arrow_schema()))
+            batches.append(pa.RecordBatch.from_pylist(buffer, schema=target))
         return pa.Table.from_batches(batches)
-
-    def _arrow_schema(self):
-        import pyarrow as pa
-
-        fields = []
-        for field in self.schema:
-            if field.type == "P":
-                # Decimal128 keeps the exact value SAP wrote; a float would not.
-                dtype = (
-                    pa.float64()
-                    if self.decimal_as_float
-                    else pa.decimal128(max(field.length * 2, 1), field.decimals)
-                )
-            elif field.type == "D":
-                dtype = pa.string()
-            else:
-                dtype = pa.string()
-            fields.append(pa.field(field.name, dtype))
-        return pa.schema(fields)
 
 
 def read_records(
