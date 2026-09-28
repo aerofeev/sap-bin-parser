@@ -1,0 +1,18 @@
+# A hardened single-host deployment. Put TLS in front (Caddy, nginx, a load
+# balancer) and point it at port 8080.
+services:
+  sap-bin:
+    image: ghcr.io/aerofeev/sap-bin-parser:latest
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true            # nothing is ever written: prove it
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      SAPBIN_MAX_UPLOAD_MB: "20000"
+      SAPBIN_MAX_CONCURRENCY: "4"
+    deploy:
+      resources:
+        limits:
+          memory: 1g           # a conversion needs ~150 MB whatever its size
+    restart: unless-stopped

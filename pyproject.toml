@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sap-bin-parser"
+dynamic = ["version"]
+description = "Parse SAP fixed-width binary table exports (.BIN) into CSV or Parquet: the reference library behind sap-bin"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Alexander Erofeev" }]
+maintainers = [{ name = "eidox ai" }]
+keywords = ["sap", "packed-decimal", "comp-3", "fixed-width", "etl", "parquet"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Database",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = []
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=14"]
+arrow = ["pyarrow>=14"]
+dev = ["pytest>=8", "pyarrow>=14", "ruff>=0.6"]
+
+[project.scripts]
+sap-bin-py = "sap_bin_parser.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/aerofeev/sap-bin-parser"
+Issues = "https://github.com/aerofeev/sap-bin-parser/issues"
+
+[tool.hatch.version]
+path = "src/sap_bin_parser/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sap_bin_parser"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/rust", "/web", "/deploy", "/.github", "/bench", "/docs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

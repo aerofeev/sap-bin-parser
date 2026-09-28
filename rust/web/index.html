@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sap-bin: SAP binary exports to CSV and Parquet</title>
+  <meta name="description" content="Convert SAP fixed-width binary table exports (.BIN, zip of zips) to CSV, Parquet or JSON Lines. Streams, stores nothing, runs on your own computer too.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="author" content="eidox ai">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/app.css">
+  <script src="assets/app.js" defer></script>
+</head>
+<body>
+  <header class="sticky top-0 z-10 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+    <div class="shell flex h-14 items-center gap-3">
+      <a class="flex items-center gap-2.5 text-base font-semibold text-foreground no-underline" href="./" aria-label="sap-bin home">
+        <span class="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
+          <svg class="size-4 fill-none stroke-current stroke-2" viewBox="0 0 24 24" aria-hidden="true" stroke-linecap="round"><path d="M4 6h6M4 12h10M4 18h8M15 6h5M17 12h3M15 18h5"/></svg>
+        </span>
+        <span>sap-bin</span>
+      </a>
+      <span id="mode-badge" class="badge live" hidden></span>
+      <nav class="bar-links ml-auto flex items-center gap-5">
+        <a class="max-sm:hidden" href="#how">How it works</a>
+        <a class="max-sm:hidden" href="#local">Run it yourself</a>
+        <a class="button small" href="https://github.com/aerofeev/sap-bin-parser" rel="noopener">
+          <svg class="size-4 fill-current" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          Source
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="shell pb-12">
+    <section class="pt-10 pb-8 sm:pt-14">
+      <p class="eyebrow mb-3">SAP data tools</p>
+      <h1 class="max-w-3xl text-3xl leading-tight sm:text-4xl">SAP binary exports, converted to CSV, Parquet or JSON&nbsp;Lines</h1>
+      <p class="mt-3 max-w-2xl text-lg text-muted-foreground">Drop a SAP table export and download a file your tools can read. It is converted as a stream, <span id="where-text">on the server</span>, and nothing is ever stored.</p>
+    </section>
+
+    <section id="drop" class="card drop" tabindex="-1">
+      <input id="picker" type="file" multiple hidden>
+      <input id="folder-picker" type="file" webkitdirectory hidden>
+      <div class="drop-inner">
+        <div class="drop-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3m0 0L7 8m5-5 5 5"/><path d="M3 15v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4"/></svg></div>
+        <p class="drop-title">Drop your export here</p>
+        <p class="drop-sub" id="drop-sub">The delivered <code>.zip</code>, the unzipped export folder, or <code>DATA.N.BIN</code> files with their <code>DATA.0.TXT</code>. No schema? You can type one in.</p>
+        <div class="drop-actions">
+          <button id="choose" class="button primary" type="button">Choose files</button>
+          <button id="choose-folder" class="button" type="button">Choose folder</button>
+          <button id="try-sample" class="button ghost" type="button">Try a sample export</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="inspect" class="card" hidden aria-live="polite">
+      <div class="file-row">
+        <div>
+          <div id="file-name" class="file-name"></div>
+          <div id="file-meta" class="muted small"></div>
+        </div>
+        <div class="row-actions">
+          <button id="edit-schema" class="button small" type="button" hidden>Edit schema</button>
+          <button id="reset" class="button ghost small" type="button">Choose another</button>
+        </div>
+      </div>
+
+      <div id="inspect-loading" class="loading" hidden><span class="spinner" aria-hidden="true"></span> Reading the start and end of the file…</div>
+
+      <div id="summary" class="stats" hidden></div>
+      <div id="notes"></div>
+
+      <div id="decode-error" class="alert error" hidden>
+        <strong>These records don't line up with the schema.</strong>
+        <p id="decode-error-text" class="mono small"></p>
+        <div id="probe"></div>
+      </div>
+
+      <div id="editor" class="editor" hidden>
+        <div class="editor-head">
+          <h3>Schema</h3>
+          <span id="editor-sum" class="muted small"></span>
+        </div>
+        <p class="muted small">One row per field, in record order. Bytes follow from the type and length unless you change them. The edited schema is used for this conversion instead of the export's own <code>DATA.0.TXT</code>.</p>
+        <div class="table-wrap editor-wrap">
+          <table>
+            <thead><tr><th class="num">Offset</th><th>Field</th><th>Type</th><th>Length</th><th>Decimals</th><th>Bytes</th><th><span class="sr-only">Actions</span></th></tr></thead>
+            <tbody id="editor-rows"></tbody>
+          </table>
+        </div>
+        <div id="paste-box" hidden>
+          <label class="paste-label" for="paste-text">Paste a <code>DATA.0.TXT</code>, or lines of <code>NAME TYPE LENGTH DECIMALS</code> (from SE11, a spreadsheet, anywhere)</label>
+          <textarea id="paste-text" rows="8" spellcheck="false"></textarea>
+          <div class="editor-actions"><button id="paste-apply" class="button small" type="button">Use this text</button></div>
+        </div>
+        <div id="editor-error" class="alert error" hidden></div>
+        <div class="editor-actions">
+          <button id="add-field" class="button small" type="button">Add field</button>
+          <button id="paste-schema" class="button small" type="button">Paste text</button>
+          <button id="load-schema" class="button small" type="button">Load DATA.0.TXT</button>
+          <input id="schema-picker" type="file" hidden accept=".txt,.TXT,.zip">
+          <button id="download-schema" class="button small" type="button">Download as DATA.0.TXT</button>
+          <span class="spacer"></span>
+          <button id="discard-schema" class="button ghost small" type="button">Cancel</button>
+          <button id="apply-schema" class="button primary small" type="button">Apply schema</button>
+        </div>
+      </div>
+
+      <div id="tabs" class="tabs" hidden>
+        <div class="tab-list" role="tablist">
+          <button role="tab" id="tab-preview" aria-selected="true" aria-controls="panel-preview" type="button">Preview</button>
+          <button role="tab" id="tab-fields" aria-selected="false" aria-controls="panel-fields" type="button">Fields</button>
+        </div>
+        <div id="panel-preview" role="tabpanel" aria-labelledby="tab-preview" class="table-wrap"></div>
+        <div id="panel-fields" role="tabpanel" aria-labelledby="tab-fields" class="table-wrap" hidden></div>
+      </div>
+    </section>
+
+    <section id="convert" class="card" hidden>
+      <h2>Convert</h2>
+      <div class="formats" role="radiogroup" aria-label="Output format">
+        <label><input type="radio" name="format" value="csv" checked><span><b>CSV</b><small>Any tool</small></span></label>
+        <label><input type="radio" name="format" value="excel"><span><b>CSV for Excel</b><small>Opens with the right characters</small></span></label>
+        <label><input type="radio" name="format" value="parquet"><span><b>Parquet</b><small>Exact decimals, small</small></span></label>
+        <label><input type="radio" name="format" value="jsonl"><span><b>JSON Lines</b><small>One object per record</small></span></label>
+      </div>
+
+      <label id="split-row" class="check" hidden><input id="split" type="checkbox"> One file per shard, in a zip</label>
+
+      <details class="advanced">
+        <summary>More options</summary>
+        <div class="grid-options">
+          <label>Amounts
+            <select id="decimals"><option value="exact">Exact decimals</option><option value="float">Floating point</option></select>
+          </label>
+          <label>If a record will not decode
+            <select id="on-error"><option value="stop">Stop with an error</option><option value="skip">Leave the value empty and continue</option></select>
+          </label>
+          <label>Record size (bytes)
+            <input id="record-size" type="number" min="1" inputmode="numeric" placeholder="from the schema">
+          </label>
+          <label>Only the first N records
+            <input id="limit" type="number" min="1" inputmode="numeric" placeholder="all">
+          </label>
+          <label>CSV delimiter
+            <select id="delimiter"><option value=",">Comma ,</option><option value=";">Semicolon ;</option><option value="tab">Tab</option><option value="|">Pipe |</option></select>
+          </label>
+          <label>Parquet compression
+            <select id="compression"><option value="zstd">zstd</option><option value="snappy">snappy</option><option value="gzip">gzip</option><option value="none">none</option></select>
+          </label>
+          <label>Text shard encoding
+            <select id="text-encoding"><option value="windows-1251">windows-1251</option><option value="windows-1252">windows-1252</option><option value="utf-8">UTF-8</option><option value="iso-8859-2">ISO-8859-2</option></select>
+          </label>
+        </div>
+      </details>
+
+      <div class="go">
+        <button id="go" class="button primary big" type="button">Convert</button>
+        <span id="out-name" class="muted"></span>
+      </div>
+
+      <div id="progress" class="progress" hidden aria-live="polite">
+        <div class="meter"><div id="meter-fill"></div></div>
+        <div class="progress-row">
+          <span id="progress-text"></span>
+          <button id="cancel" class="button ghost small" type="button">Cancel</button>
+        </div>
+      </div>
+      <div id="result" hidden aria-live="polite"></div>
+
+      <details class="cli">
+        <summary>Do the same from a terminal or script</summary>
+        <div id="snippets"></div>
+      </details>
+    </section>
+
+    <section id="how" class="info">
+      <div>
+        <h2>Nothing is stored</h2>
+        <ul>
+          <li>Where your browser allows it, the conversion runs in this page: the same engine, compiled to WebAssembly. Then your file goes nowhere at all, and afterwards the service is told only the totals.</li>
+          <li>Otherwise your file is read as a stream and converted chunk by chunk as it arrives. The result streams straight back into your downloads.</li>
+          <li>There is no temporary file, no database and no copy. Logs hold the method, path, status and timing of each request, never names or contents.</li>
+          <li>To show progress, the server keeps a few counters under a random id your browser made up, and forgets them five minutes after the conversion.</li>
+          <li>The service keeps running totals (how many records were converted, in which formats, from which SAP tables), never tied to a person, an address or a file.</li>
+          <li>The page loads nothing from anywhere else. Its security policy forbids it from contacting any other site.</li>
+          <li>Don't take our word for it: the <a href="https://github.com/aerofeev/sap-bin-parser" rel="noopener">source is open</a>, and the same app runs on your own computer.</li>
+        </ul>
+      </div>
+      <div>
+        <h2>What is in a SAP binary export</h2>
+        <p>A zip of per-shard zips holding <code>DATA.N.BIN</code> files, plus a <code>DATA.0.TXT</code> describing every field. There is no delimiter and no header. Text is UTF-16 big-endian and amounts are packed decimal (COMP-3).</p>
+        <p>The trap: a BSIS record's fields add up to <b>125</b> bytes, but records sit at <b>126</b>. SAP pads odd-length records by one byte so the UTF-16 text stays aligned. Miss that and every record after the first is shifted, and the output still looks plausible. sap-bin applies the rule, checks every packed-decimal sign, and refuses to write garbage.</p>
+      </div>
+    </section>
+
+    <section id="local" class="card">
+      <h2>Run it on your computer</h2>
+      <p class="muted mt-0 text-sm">The same page, running locally. Nothing leaves your machine, there are no size limits, and it uses every core you have.</p>
+      <div class="downloads">
+        <a class="button" href="https://github.com/aerofeev/sap-bin-parser/releases/latest/download/sap-bin-windows-x64.zip" rel="noopener">Windows</a>
+        <a class="button" href="https://github.com/aerofeev/sap-bin-parser/releases/latest/download/sap-bin-macos-arm64.tar.gz" rel="noopener">macOS (Apple silicon)</a>
+        <a class="button" href="https://github.com/aerofeev/sap-bin-parser/releases/latest/download/sap-bin-macos-x64.tar.gz" rel="noopener">macOS (Intel)</a>
+        <a class="button" href="https://github.com/aerofeev/sap-bin-parser/releases/latest/download/sap-bin-linux-x64.tar.gz" rel="noopener">Linux</a>
+      </div>
+      <p class="muted small m-0">Unzip and double-click <code>sap-bin</code>: your browser opens on this page. It is also a command-line tool, and there is a <a href="https://github.com/aerofeev/sap-bin-parser/blob/main/docs/docker.md" rel="noopener">Docker image</a> and a <a href="https://github.com/aerofeev/sap-bin-parser/blob/main/docs/python.md" rel="noopener">Python library</a>.</p>
+    </section>
+  </main>
+
+  <footer class="border-t bg-background">
+    <div class="shell flex flex-wrap items-center justify-between gap-3 py-6 text-sm text-muted-foreground">
+      <span>sap-bin <span id="version"></span> · MIT licence · <a class="maker" href="https://eidox.io" rel="noopener">made by eidox ai</a></span>
+      <a class="maker" href="https://github.com/aerofeev/sap-bin-parser/issues" rel="noopener">Report a problem</a>
+    </div>
+  </footer>
+
+  <iframe name="sink" id="sink" title="download" hidden></iframe>
+</body>
+</html>

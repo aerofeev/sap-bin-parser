@@ -1,0 +1,13 @@
+# Virtual workspace so `cargo install --git https://github.com/aerofeev/sap-bin-parser sap-bin`
+# finds the engine crate; the Python package lives alongside it in src/.
+[workspace]
+resolver = "2"
+members = ["rust", "rust/wasm"]
+# The WebAssembly bindings build for the browser only: scripts/build-wasm.sh.
+default-members = ["rust"]
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,198 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  python:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+      - name: Lint
+        run: |
+          ruff check src tests scripts
+          ruff format --check src tests scripts
+      - name: Test
+        run: pytest -q
+
+  python-without-pyarrow:
+    # CSV output must work with no dependencies at all.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install without optional extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+      - name: Test
+        run: pytest -q
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --locked
+      - name: Smoke test the binary
+        shell: bash
+        run: |
+          cargo build --release --locked
+          target/release/sap-bin --version
+          target/release/sap-bin bench --records 200000
+      - name: The engine alone, and its WebAssembly bindings
+        if: runner.os == 'Linux'
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo clippy --locked -p sap-bin --no-default-features -- -D warnings
+          cargo clippy --locked -p sap-bin-wasm --target wasm32-unknown-unknown -- -D warnings
+
+  cross-implementation:
+    # The Python library and the Rust engine must produce identical output.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          cargo build --release --locked
+          pip install -e '.[dev]'
+      - name: Compare
+        env:
+          SAP_BIN_RUST: target/release/sap-bin
+        run: pytest -q tests/test_cross_implementation.py
+
+  browser:
+    # The web page, driven end to end in Chromium: converting in the browser
+    # (the engine as WebAssembly) at the domain root, and on the server under
+    # a path prefix.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check the page's JavaScript parses
+        run: |
+          for f in app.js stats.js convert-worker.js; do node --check "rust/web/$f"; done
+      - name: Check the compiled stylesheet is up to date
+        working-directory: rust/web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build:css
+          git diff --exit-code -- app.css || {
+            echo "::error::rust/web/app.css is stale: run 'npm run build:css' in rust/web and commit it"
+            exit 1
+          }
+      - name: Build the engine for the browser
+        run: scripts/build-wasm.sh
+      - name: Build, with the browser engine embedded
+        run: cargo build --release --locked
+      - name: Install Playwright
+        working-directory: rust/web/tests
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Run at the domain root, converting in the browser
+        run: node rust/web/tests/e2e.mjs target/release/sap-bin target/e2e
+      - name: Run under a path prefix, as at tools.eidox.io/sap-bin-parser/, converting on the server
+        env:
+          BASE_PATH: /sap-bin-parser
+          CONVERT: server
+        run: node rust/web/tests/e2e.mjs target/release/sap-bin target/e2e-prefixed
+      - name: Keep screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: |
+            target/e2e/*.png
+            target/e2e-prefixed/*.png
+
+  stores-nothing:
+    # Prove the service never writes to disk, and with usage statistics on,
+    # writes only its statistics file: trace its file system calls.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get install -y strace
+      - run: cargo build --release --locked
+      - run: scripts/prove-stores-nothing.sh target/release/sap-bin
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t sap-bin:ci .
+      - name: Run it read-only and convert a sample
+        run: |
+          docker run -d --rm --read-only --cap-drop ALL -p 8080:8080 --name sap-bin sap-bin:ci
+          for i in $(seq 30); do curl -fsS localhost:8080/healthz && break; sleep 1; done
+          curl -fsS 'localhost:8080/api/sample?records=10000&shards=2' -o sample.zip
+          curl -fsS --data-binary @sample.zip 'localhost:8080/api/convert?format=csv' -o out.csv
+          test "$(wc -l < out.csv)" -eq 20001
+          docker stop sap-bin
+      - name: Keep usage statistics on a volume, with the rest read-only
+        run: |
+          token=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+          docker volume create usage
+          docker run -d --rm --read-only --cap-drop ALL -p 8080:8080 -v usage:/data \
+            -e SAPBIN_STATS_FILE=/data/usage.json -e SAPBIN_STATS_TOKEN="$token" --name sap-bin sap-bin:ci
+          for i in $(seq 30); do curl -fsS localhost:8080/healthz && break; sleep 1; done
+          curl -fsS --data-binary @sample.zip 'localhost:8080/api/convert?format=csv' -o /dev/null
+          sleep 1
+          curl -fsS -H "Authorization: Bearer $token" localhost:8080/api/stats | grep -q '"records":20000'
+          # docker stop sends SIGTERM: the totals are saved on the way out.
+          docker stop sap-bin
+          docker run -d --rm --read-only --cap-drop ALL -p 8080:8080 -v usage:/data \
+            -e SAPBIN_STATS_FILE=/data/usage.json -e SAPBIN_STATS_TOKEN="$token" --name sap-bin sap-bin:ci
+          for i in $(seq 30); do curl -fsS localhost:8080/healthz && break; sleep 1; done
+          curl -fsS -H "Authorization: Bearer $token" localhost:8080/api/stats | grep -q '"records":20000'
+          docker stop sap-bin

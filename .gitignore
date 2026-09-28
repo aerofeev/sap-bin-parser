@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Data — never commit client exports or anything derived from them
+*.BIN
+*.bin
+*.zip
+*.parquet
+out/
+data/
+
+# DATA.0.TXT sidecars describe client table layouts; keep them out too
+DATA.*.TXT
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Rust
+/target/
+
+# Browser test tooling
+node_modules/
+
+# Deployment secrets
+.env
+
+# The WebAssembly build of the engine (scripts/build-wasm.sh)
+rust/web/wasm/

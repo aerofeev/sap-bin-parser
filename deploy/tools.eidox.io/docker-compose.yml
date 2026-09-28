@@ -1,0 +1,43 @@
+# sap-bin at https://tools.eidox.io/sap-bin-parser/
+#
+#   docker compose up -d            start
+#   docker compose pull && docker compose up -d    update to the newest merge to main
+#
+# Listens on 127.0.0.1:8080 only; the reverse proxy (Caddyfile or nginx.conf
+# next to this file) is what faces the internet.
+#
+# Usage statistics (private, at /sap-bin-parser/stats) need a token in a
+# .env file next to this one, which is never committed:
+#
+#   echo "SAPBIN_STATS_TOKEN=$(openssl rand -hex 24)" > .env
+#
+# Without it the statistics routes do not exist. The totals are kept on the
+# "usage" volume; everything else stays read-only.
+services:
+  sap-bin:
+    # Follows main: every merge is live after a pull. To pin a release
+    # instead, use :latest or a version such as :0.1.0.
+    image: ghcr.io/aerofeev/sap-bin-parser:main
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      SAPBIN_BASE_PATH: /sap-bin-parser
+      SAPBIN_MAX_UPLOAD_MB: "20000"
+      SAPBIN_MAX_CONCURRENCY: "4"
+      SAPBIN_STATS_FILE: /data/usage.json
+      SAPBIN_STATS_TOKEN: ${SAPBIN_STATS_TOKEN:-}
+    volumes:
+      - usage:/data            # the usage totals, and nothing else
+    read_only: true            # nothing else is ever written
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits:
+          memory: 1g           # ~150 MB per conversion, whatever its size
+    healthcheck:
+      disable: true            # distroless: probe /sap-bin-parser/healthz from outside
+    restart: unless-stopped
+
+volumes:
+  usage:

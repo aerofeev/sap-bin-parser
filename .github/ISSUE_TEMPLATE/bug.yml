@@ -1,0 +1,28 @@
+name: Something is wrong
+description: A conversion fails, or its output is not what SAP holds
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Please never attach an export or paste its values.** They are usually financial
+        records. The commands below describe an export without revealing its data.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: info
+    attributes:
+      label: Output of `sap-bin info YOUR.QUERY.zip --fields`
+      render: text
+  - type: textarea
+    id: compare
+    attributes:
+      label: Output of `python scripts/compare.py YOUR.QUERY.zip` (if you can run it)
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version (`sap-bin --version`) and how you ran it (app, CLI, server, Python)
