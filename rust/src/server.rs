@@ -64,8 +64,7 @@ const APP_CSS: &str = include_str!("../web/app.css");
 const FAVICON: &str = include_str!("../web/favicon.svg");
 const STATS_HTML: &str = include_str!("../web/stats.html");
 const STATS_JS: &str = include_str!("../web/stats.js");
-const INTER_LATIN: &[u8] = include_bytes!("../web/fonts/inter-latin-wght-normal.woff2");
-const INTER_CYRILLIC: &[u8] = include_bytes!("../web/fonts/inter-cyrillic-wght-normal.woff2");
+const INTER: &[u8] = include_bytes!("../web/fonts/Inter.var.woff2");
 
 /// The page's Content-Security-Policy: nothing from anywhere but here, and
 /// no connection to anywhere but here.
@@ -316,14 +315,7 @@ fn router(config: Config, usage: Arc<Usage>) -> Router {
             "/assets/app.css",
             get(|| async { asset("text/css; charset=utf-8", APP_CSS) }),
         )
-        .route(
-            "/fonts/inter-latin-wght-normal.woff2",
-            get(|| async { font(INTER_LATIN) }),
-        )
-        .route(
-            "/fonts/inter-cyrillic-wght-normal.woff2",
-            get(|| async { font(INTER_CYRILLIC) }),
-        )
+        .route("/fonts/Inter.var.woff2", get(|| async { font(INTER) }))
         .route(
             "/favicon.svg",
             get(|| async { asset("image/svg+xml", FAVICON) }),
@@ -476,8 +468,8 @@ fn asset(content_type: &'static str, body: &'static str) -> Response {
         .into_response()
 }
 
-/// The page's typeface (Inter, SIL Open Font License), served from the
-/// binary like everything else.
+/// The page's typeface: Inter (SIL Open Font License), the same variable
+/// font file Frappe UI uses, served from the binary like everything else.
 fn font(body: &'static [u8]) -> Response {
     (
         [
