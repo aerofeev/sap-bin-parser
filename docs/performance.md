@@ -1,5 +1,7 @@
 [Overview](../README.md) · [Web](web.md) · [App & CLI](cli.md) · [Python](python.md) · [Docker](docker.md) · [HTTP API](http-api.md) · [Privacy](privacy.md) · **Performance** · [Export format](format.md)
 
+English · [Русский](ru/performance.md)
+
 # Performance
 
 Measured with `sap-bin bench` on a 4-vCPU Intel Xeon at 2.1 GHz, on the 126-byte BSIS

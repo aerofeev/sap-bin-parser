@@ -1,5 +1,7 @@
 [Overview](../README.md) · [Web](web.md) · **App & CLI** · [Python](python.md) · [Docker](docker.md) · [HTTP API](http-api.md) · [Privacy](privacy.md) · [Performance](performance.md) · [Export format](format.md)
 
+English · [Русский](ru/cli.md)
+
 # The app and the command line
 
 One program is both. Download it for

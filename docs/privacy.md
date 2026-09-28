@@ -1,5 +1,7 @@
 [Overview](../README.md) · [Web](web.md) · [App & CLI](cli.md) · [Python](python.md) · [Docker](docker.md) · [HTTP API](http-api.md) · **Privacy** · [Performance](performance.md) · [Export format](format.md)
 
+English · [Русский](ru/privacy.md)
+
 # Nothing is stored
 
 The web service is built so that storing your data is not something it can do by

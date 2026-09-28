@@ -1,5 +1,7 @@
 [Overview](../README.md) · [Web](web.md) · [App & CLI](cli.md) · **Python** · [Docker](docker.md) · [HTTP API](http-api.md) · [Privacy](privacy.md) · [Performance](performance.md) · [Export format](format.md)
 
+English · [Русский](ru/python.md)
+
 # Python
 
 The Python package is the reference implementation: the [app](cli.md) is 15 to 25 times

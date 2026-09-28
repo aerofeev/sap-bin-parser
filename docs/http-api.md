@@ -1,5 +1,7 @@
 [Overview](../README.md) · [Web](web.md) · [App & CLI](cli.md) · [Python](python.md) · [Docker](docker.md) · **HTTP API** · [Privacy](privacy.md) · [Performance](performance.md) · [Export format](format.md)
 
+English · [Русский](ru/http-api.md)
+
 # HTTP API
 
 The web service's own page uses these endpoints, and scripts can too. Paths are relative

@@ -1,5 +1,7 @@
 # sap-bin
 
+English · [Русский](https://github.com/aerofeev/sap-bin-parser/blob/main/README.ru.md)
+
 **Convert SAP binary table exports (`.BIN`) to CSV, Parquet or JSON Lines.** Fast enough
 for a hundred million records, simple enough to drop a file on a web page, and built so
 that nothing you convert is ever stored.

@@ -1,5 +1,7 @@
 [Overview](../README.md) · **Web** · [App & CLI](cli.md) · [Python](python.md) · [Docker](docker.md) · [HTTP API](http-api.md) · [Privacy](privacy.md) · [Performance](performance.md) · [Export format](format.md)
 
+English · [Русский](ru/web.md)
+
 # The web page
 
 The page is the same whether it runs at
