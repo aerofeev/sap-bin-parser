@@ -2,6 +2,7 @@
 //
 //   node rust/web/tests/e2e.mjs [path/to/sap-bin] [output-dir]
 //   BASE_PATH=/sap-bin-parser node rust/web/tests/e2e.mjs ...   (under a path prefix)
+//   CONVERT=server node rust/web/tests/e2e.mjs ...   (the server path, not WebAssembly)
 //
 // Starts the server, drives the page with Playwright (Chromium), downloads
 // the converted files into output-dir, and fails on any console error,
@@ -16,6 +17,10 @@ const outDir = resolve(process.argv[3] ?? "target/e2e");
 mkdirSync(outDir, { recursive: true });
 const port = 18000 + Math.floor(Math.random() * 2000);
 const basePath = (process.env.BASE_PATH || "").replace(/\/+$/, "");
+// CONVERT=server tests the server path, which browsers without WebAssembly
+// or a private file system use.
+const onServer = process.env.CONVERT === "server";
+const pageUrl = `${onServer ? "?convert=server" : ""}`;
 const base = `http://127.0.0.1:${port}${basePath}`;
 
 const statsToken = "e2e-token-0123456789abcdefgh";
@@ -46,13 +51,17 @@ try {
   const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1200, height: 900 } });
   const page = await context.newPage();
   const problems = [];
+  // Requests that would carry an export to the server.
+  const uploads = [];
   page.on("console", (m) => { if (m.type() === "error") problems.push(m.text()); });
   page.on("pageerror", (e) => problems.push(String(e)));
+  page.on("request", (r) => { if (/\/api\/(inspect|jobs|convert)/.test(r.url())) uploads.push(new URL(r.url()).pathname); });
 
-  await page.goto(`${base}/`);
+  await page.goto(`${base}/${pageUrl}`);
   check((await page.title()).startsWith("sap-bin"), "page loads");
   await page.waitForSelector("#mode-badge:not([hidden])");
-  check((await page.textContent("#mode-badge")) === "Stores nothing", "hosted mode badge");
+  const badge = await page.textContent("#mode-badge");
+  check(badge === (onServer ? "Stores nothing" : "Converts in your browser"), `hosted mode badge (${badge})`);
 
   // 1. The sample export: inspect, preview, fields.
   await page.click("#try-sample");
@@ -73,6 +82,9 @@ try {
   const [parquet] = await Promise.all([page.waitForEvent("download"), page.click("#go")]);
   check(parquet.suggestedFilename() === "BSIS.parquet", "download is named after the table");
   await parquet.saveAs(join(outDir, "sample.parquet"));
+  await page.waitForSelector("#result .alert.ok");
+  check((await page.textContent("#result")).includes("Converted in your browser") !== onServer,
+    onServer ? "converted on the server" : "converted in the browser, without an upload");
   await page.waitForSelector("#result .alert.ok");
   check((await page.textContent("#result")).includes("Converted 60,000 records from 3 shards"), "completion reported");
   await page.screenshot({ path: join(outDir, "done.png") });
@@ -211,7 +223,7 @@ open(sys.argv[1] + "/big.BIN", "wb").write(data * 5)
 
   // 6. Phone width: nothing scrolls sideways.
   await page.setViewportSize({ width: 375, height: 800 });
-  await page.goto(`${base}/`);
+  await page.goto(`${base}/${pageUrl}`);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   check(overflow <= 0, "no horizontal scroll at 375px");
   await page.screenshot({ path: join(outDir, "phone.png"), fullPage: true });
@@ -219,10 +231,14 @@ open(sys.argv[1] + "/big.BIN", "wb").write(data * 5)
   // 7. Dark mode renders.
   const dark = await browser.newContext({ colorScheme: "dark", viewport: { width: 1200, height: 900 } });
   const darkPage = await dark.newPage();
-  await darkPage.goto(`${base}/`);
+  await darkPage.goto(`${base}/${pageUrl}`);
   await darkPage.click("#try-sample");
   await darkPage.waitForSelector("#summary:not([hidden])");
   await darkPage.screenshot({ path: join(outDir, "dark.png") });
+
+  if (!onServer) {
+    check(uploads.length === 0, `in the browser, nothing was sent to the server${uploads.length ? `: ${uploads.join(" ")}` : ""}`);
+  }
 
   // 8. Downloads are compressed on the wire, and saved decompressed.
   const encoding = await page.evaluate(async () => {

@@ -18,11 +18,14 @@ pub mod decode;
 pub mod error;
 pub mod files;
 pub mod inspect;
+pub mod params;
 pub mod probe;
 pub mod sample;
 pub mod schema;
+#[cfg(feature = "server")]
 pub mod server;
 pub mod text;
+#[cfg(feature = "server")]
 pub mod usage;
 pub mod writer;
 pub mod zip;

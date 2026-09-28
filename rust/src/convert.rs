@@ -16,14 +16,16 @@
 //! memory. (Credits are per job rather than global so the job the writer is
 //! waiting for can never be starved by later ones.)
 
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crossbeam_channel::{bounded, Receiver, Sender};
+use web_time::Instant;
 
 use crate::archive::{self, ShardFormat};
 pub use crate::decode::DecimalMode;
@@ -126,6 +128,9 @@ pub struct Options {
     pub split: bool,
     /// Worker threads; 0 picks one per CPU.
     pub threads: usize,
+    /// Convert in the calling thread without starting any others, as the
+    /// WebAssembly build must. Slower, and `threads` is ignored.
+    pub sequential: bool,
     /// A schema to use instead of the archive's sidecar.
     pub schema: Option<Schema>,
     pub input_kind: InputKind,
@@ -149,6 +154,7 @@ impl Default for Options {
             limit: None,
             split: false,
             threads: 0,
+            sequential: false,
             schema: None,
             input_kind: InputKind::Auto,
             name_hint: None,
@@ -425,7 +431,6 @@ struct Job {
     /// Bytes after the last whole record (only on a shard's last chunk).
     trailing: usize,
     last: bool,
-    out: Sender<Chunk>,
 }
 
 enum Payload {
@@ -481,21 +486,27 @@ impl Context<'_> {
     }
 }
 
-/// Sends chunks for one job; a closed channel means the writer has stopped
+/// Where a job's chunks go. False from `send` means the writer has stopped
 /// (limit reached or failure elsewhere), which ends the job quietly.
-struct JobOut<'a> {
-    tx: &'a Sender<Chunk>,
+enum JobOut<'a, 'w> {
+    /// To the writer thread, through the job's own bounded channel.
+    Channel(&'a Sender<Chunk>),
+    /// Straight to the writer, in the same thread.
+    Writer(&'a RefCell<Writer<'w>>),
 }
 
-impl JobOut<'_> {
+impl JobOut<'_, '_> {
     fn send(&self, chunk: Chunk) -> bool {
-        self.tx.send(chunk).is_ok()
+        match self {
+            JobOut::Channel(tx) => tx.send(chunk).is_ok(),
+            JobOut::Writer(writer) => writer.borrow_mut().chunk(chunk),
+        }
     }
 }
 
-fn run_worker(jobs: Receiver<Job>, ctx: &Context<'_>) {
-    for job in jobs {
-        let out = JobOut { tx: &job.out };
+fn run_worker(jobs: Receiver<(Job, Sender<Chunk>)>, ctx: &Context<'_>) {
+    for (job, tx) in jobs {
+        let out = JobOut::Channel(&tx);
         if let Err(error) = process(&job, ctx, &out) {
             out.send(Chunk::Error(error));
         }
@@ -509,7 +520,7 @@ fn decode_records(
     first_record: u64,
     remaining: &mut Option<u64>,
     ctx: &Context<'_>,
-    out: &JobOut<'_>,
+    out: &JobOut<'_, '_>,
 ) -> Result<Option<u64>> {
     let size = ctx.decoder.record_size();
     let total = data.len() / size;
@@ -565,7 +576,7 @@ fn trailing_bytes(
     trailing: usize,
     records: u64,
     ctx: &Context<'_>,
-    out: &JobOut<'_>,
+    out: &JobOut<'_, '_>,
 ) -> Result<()> {
     if trailing == 0 {
         return Ok(());
@@ -582,7 +593,7 @@ fn trailing_bytes(
     }
 }
 
-fn process(job: &Job, ctx: &Context<'_>, out: &JobOut<'_>) -> Result<()> {
+fn process(job: &Job, ctx: &Context<'_>, out: &JobOut<'_, '_>) -> Result<()> {
     let mut remaining = ctx.limit;
     match &job.payload {
         Payload::Records(data) => {
@@ -620,7 +631,7 @@ fn process(job: &Job, ctx: &Context<'_>, out: &JobOut<'_>) -> Result<()> {
     }
 }
 
-fn decode_text(bytes: &[u8], ctx: &Context<'_>, out: &JobOut<'_>) -> Result<()> {
+fn decode_text(bytes: &[u8], ctx: &Context<'_>, out: &JobOut<'_, '_>) -> Result<()> {
     let schema = ctx.decoder.schema().clone();
     let result = decode_text_shard(bytes, &schema, &ctx.text, BLOCK_ROWS, ctx.limit, |block| {
         if ctx.stopped() {
@@ -648,103 +659,206 @@ struct WriterOutcome {
     warnings: Vec<String>,
 }
 
-fn run_writer(
-    mut sink: Box<dyn Sink + Send + '_>,
-    order: Receiver<(Ticket, Receiver<Chunk>)>,
+/// Writes decoded chunks in order, and knows when to stop: at the record
+/// limit, or at the first failure, which it keeps for [`Writer::finish`].
+struct Writer<'a> {
+    sink: Box<dyn Sink + Send + 'a>,
     limit: Option<u64>,
     split: bool,
-    progress: &Progress,
-    abort: &AtomicBool,
-    ready: &mut dyn FnMut(),
-) -> Result<WriterOutcome> {
-    let mut outcome = WriterOutcome {
-        records: 0,
-        shards: 0,
-        failed: 0,
-        warnings: Vec::new(),
-    };
-    let mut shard_rows = 0u64;
-    let mut open = false;
-    let mut reached = false;
-    let fail = |error: Error| {
-        abort.store(true, Ordering::SeqCst);
-        Err(error)
-    };
-
-    'jobs: for (ticket, chunks) in order.iter() {
-        if ticket.begins {
-            if let Err(e) = sink.begin_shard(&ticket.name) {
-                return fail(e);
-            }
-            open = true;
-            shard_rows = 0;
-        }
-        for chunk in chunks.iter() {
-            let partial = matches!(chunk, Chunk::Partial(_));
-            match chunk {
-                Chunk::Data(encoded) | Chunk::Partial(encoded) => {
-                    // Output that is about to be followed by an error does not
-                    // count as a successful start.
-                    let used = if split { shard_rows } else { outcome.records };
-                    let allowed = limit.map_or(u64::MAX, |l| l.saturating_sub(used));
-                    let encoded = if (encoded.rows() as u64) > allowed {
-                        encoded.truncate(allowed as usize)
-                    } else {
-                        encoded
-                    };
-                    let rows = encoded.rows() as u64;
-                    if rows > 0 {
-                        if !partial {
-                            ready();
-                        }
-                        if let Err(e) = sink.write(encoded) {
-                            return fail(e);
-                        }
-                    }
-                    outcome.records += rows;
-                    shard_rows += rows;
-                    progress.records.fetch_add(rows, Ordering::Relaxed);
-                    if !split && limit.is_some_and(|l| outcome.records >= l) {
-                        reached = true;
-                        break 'jobs;
-                    }
-                }
-                Chunk::Failed(n) => outcome.failed += n,
-                Chunk::Warning(w) => outcome.warnings.push(w),
-                Chunk::Error(e) => return fail(e),
-            }
-        }
-        if ticket.ends {
-            if let Err(e) = sink.end_shard() {
-                return fail(e);
-            }
-            open = false;
-            outcome.shards += 1;
-            progress.shards.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    if reached {
-        // Stop the producer and workers; everything needed is written.
-        abort.store(true, Ordering::SeqCst);
-        if open {
-            sink.end_shard()?;
-            outcome.shards += 1;
-            progress.shards.fetch_add(1, Ordering::Relaxed);
-        }
-    } else if abort.load(Ordering::SeqCst) || progress.is_cancelled() {
-        // The producer failed or the conversion was cancelled: leave the
-        // output unfinished rather than make it look complete.
-        return Err(Error::Cancelled);
-    }
-    ready();
-    sink.finish()?;
-    Ok(outcome)
+    progress: &'a Progress,
+    abort: &'a AtomicBool,
+    ready: Option<Box<dyn FnOnce() + Send + 'a>>,
+    outcome: WriterOutcome,
+    shard_rows: u64,
+    open: bool,
+    reached: bool,
+    error: Option<Error>,
 }
 
-struct Producer<'a> {
-    jobs: Sender<Job>,
-    order: Sender<(Ticket, Receiver<Chunk>)>,
+impl<'a> Writer<'a> {
+    fn new(
+        sink: Box<dyn Sink + Send + 'a>,
+        options: &Options,
+        progress: &'a Progress,
+        abort: &'a AtomicBool,
+        ready: Box<dyn FnOnce() + Send + 'a>,
+    ) -> Self {
+        Self {
+            sink,
+            limit: options.limit,
+            split: options.split,
+            progress,
+            abort,
+            ready: Some(ready),
+            outcome: WriterOutcome {
+                records: 0,
+                shards: 0,
+                failed: 0,
+                warnings: Vec::new(),
+            },
+            shard_rows: 0,
+            open: false,
+            reached: false,
+            error: None,
+        }
+    }
+
+    /// Whether the output is complete or has failed: nothing more is wanted.
+    fn done(&self) -> bool {
+        self.reached || self.error.is_some()
+    }
+
+    fn announce(&mut self) {
+        if let Some(ready) = self.ready.take() {
+            ready();
+        }
+    }
+
+    fn fail(&mut self, error: Error) -> bool {
+        self.abort.store(true, Ordering::SeqCst);
+        self.error = Some(error);
+        false
+    }
+
+    /// A job begins. False means stop.
+    fn start(&mut self, ticket: &Ticket) -> bool {
+        if self.done() {
+            return false;
+        }
+        if ticket.begins {
+            if let Err(e) = self.sink.begin_shard(&ticket.name) {
+                return self.fail(e);
+            }
+            self.open = true;
+            self.shard_rows = 0;
+        }
+        true
+    }
+
+    /// One chunk of the current job. False means stop.
+    fn chunk(&mut self, chunk: Chunk) -> bool {
+        if self.done() {
+            return false;
+        }
+        let partial = matches!(chunk, Chunk::Partial(_));
+        match chunk {
+            Chunk::Data(encoded) | Chunk::Partial(encoded) => {
+                // Output that is about to be followed by an error does not
+                // count as a successful start.
+                let used = if self.split {
+                    self.shard_rows
+                } else {
+                    self.outcome.records
+                };
+                let allowed = self.limit.map_or(u64::MAX, |l| l.saturating_sub(used));
+                let encoded = if (encoded.rows() as u64) > allowed {
+                    encoded.truncate(allowed as usize)
+                } else {
+                    encoded
+                };
+                let rows = encoded.rows() as u64;
+                if rows > 0 {
+                    if !partial {
+                        self.announce();
+                    }
+                    if let Err(e) = self.sink.write(encoded) {
+                        return self.fail(e);
+                    }
+                }
+                self.outcome.records += rows;
+                self.shard_rows += rows;
+                self.progress.records.fetch_add(rows, Ordering::Relaxed);
+                if !self.split && self.limit.is_some_and(|l| self.outcome.records >= l) {
+                    // Stop the producer and workers; everything needed is
+                    // written.
+                    self.reached = true;
+                    self.abort.store(true, Ordering::SeqCst);
+                    return false;
+                }
+            }
+            Chunk::Failed(n) => self.outcome.failed += n,
+            Chunk::Warning(w) => self.outcome.warnings.push(w),
+            Chunk::Error(e) => return self.fail(e),
+        }
+        true
+    }
+
+    /// A job ends. False means stop.
+    fn end(&mut self, ticket: &Ticket) -> bool {
+        if self.done() {
+            return false;
+        }
+        if ticket.ends {
+            if let Err(e) = self.sink.end_shard() {
+                return self.fail(e);
+            }
+            self.open = false;
+            self.outcome.shards += 1;
+            self.progress.shards.fetch_add(1, Ordering::Relaxed);
+        }
+        true
+    }
+
+    fn finish(mut self) -> Result<WriterOutcome> {
+        if let Some(error) = self.error.take() {
+            return Err(error);
+        }
+        if self.reached {
+            if self.open {
+                self.sink.end_shard()?;
+                self.outcome.shards += 1;
+                self.progress.shards.fetch_add(1, Ordering::Relaxed);
+            }
+        } else if self.abort.load(Ordering::SeqCst) || self.progress.is_cancelled() {
+            // The producer failed or the conversion was cancelled: leave the
+            // output unfinished rather than make it look complete.
+            return Err(Error::Cancelled);
+        }
+        self.announce();
+        self.sink.finish()?;
+        Ok(self.outcome)
+    }
+}
+
+/// The writer thread: jobs in the order they were queued, each one's chunks
+/// as its worker produces them.
+fn run_writer(
+    mut writer: Writer<'_>,
+    order: Receiver<(Ticket, Receiver<Chunk>)>,
+) -> Result<WriterOutcome> {
+    'jobs: for (ticket, chunks) in order.iter() {
+        if !writer.start(&ticket) {
+            break;
+        }
+        for chunk in chunks.iter() {
+            if !writer.chunk(chunk) {
+                break 'jobs;
+            }
+        }
+        if !writer.end(&ticket) {
+            break;
+        }
+    }
+    writer.finish()
+}
+
+/// Where the producer sends jobs.
+enum Dispatch<'a, 'w> {
+    /// To a pool of worker threads, and the order they must be written in to
+    /// the writer thread.
+    Pool {
+        jobs: Sender<(Job, Sender<Chunk>)>,
+        order: Sender<(Ticket, Receiver<Chunk>)>,
+    },
+    /// Decoded and written at once, in the calling thread.
+    Inline {
+        ctx: &'a Context<'a>,
+        writer: &'a RefCell<Writer<'w>>,
+    },
+}
+
+struct Producer<'a, 'w> {
+    dispatch: Dispatch<'a, 'w>,
     record_size: usize,
     limit: Option<u64>,
     split: bool,
@@ -753,7 +867,7 @@ struct Producer<'a> {
     progress: &'a Progress,
 }
 
-impl Producer<'_> {
+impl Producer<'_, '_> {
     fn stopped(&self) -> bool {
         self.abort.load(Ordering::Relaxed) || self.progress.is_cancelled()
     }
@@ -773,16 +887,29 @@ impl Producer<'_> {
         if self.stopped() {
             return false;
         }
-        let (tx, rx) = bounded(4);
         let job = Job {
             name: ticket.name.clone(),
             payload,
             first_record,
             trailing,
             last: ticket.ends,
-            out: tx,
         };
-        self.order.send((ticket, rx)).is_ok() && self.jobs.send(job).is_ok()
+        match &self.dispatch {
+            Dispatch::Pool { jobs, order } => {
+                let (tx, rx) = bounded(4);
+                order.send((ticket, rx)).is_ok() && jobs.send((job, tx)).is_ok()
+            }
+            Dispatch::Inline { ctx, writer } => {
+                if !writer.borrow_mut().start(&ticket) {
+                    return false;
+                }
+                let out = JobOut::Writer(writer);
+                if let Err(error) = process(&job, ctx, &out) {
+                    out.send(Chunk::Error(error));
+                }
+                writer.borrow_mut().end(&ticket)
+            }
+        }
     }
 
     fn whole(&mut self, name: Arc<str>, payload: Payload) -> bool {
@@ -970,7 +1097,7 @@ pub fn convert(
         schema: schema.clone(),
         archive: is_archive,
     };
-    let mut ready = Some(move || on_ready(&meta));
+    let ready: Box<dyn FnOnce() + Send + '_> = Box::new(move || on_ready(&meta));
 
     // Phase 2: run the pipeline.
     let abort = AtomicBool::new(false);
@@ -983,44 +1110,23 @@ pub fn convert(
         progress,
         abort: &abort,
     };
+    let writer = Writer::new(sink, options, progress, &abort, ready);
+    let producer = |dispatch| Producer {
+        dispatch,
+        record_size: ctx.decoder.record_size(),
+        limit: options.limit,
+        split: options.split,
+        submitted: 0,
+        abort: &abort,
+        progress,
+    };
 
-    let (produced, written) = std::thread::scope(|scope| {
-        let (job_tx, job_rx) = bounded::<Job>(workers);
-        let (order_tx, order_rx) = bounded(workers * 2 + 2);
-        let (limit, split, abort_ref) = (options.limit, options.split, &abort);
-        let writer = scope.spawn(move || {
-            let mut announce = || {
-                if let Some(ready) = ready.take() {
-                    ready();
-                }
-            };
-            run_writer(
-                sink,
-                order_rx,
-                limit,
-                split,
-                progress,
-                abort_ref,
-                &mut announce,
-            )
+    let (produced, written) = if options.sequential {
+        let writer = RefCell::new(writer);
+        let mut producer = producer(Dispatch::Inline {
+            ctx: &ctx,
+            writer: &writer,
         });
-        for _ in 0..workers {
-            let jobs = job_rx.clone();
-            let ctx = &ctx;
-            scope.spawn(move || run_worker(jobs, ctx));
-        }
-        drop(job_rx);
-
-        let mut producer = Producer {
-            jobs: job_tx,
-            order: order_tx,
-            record_size: ctx.decoder.record_size(),
-            limit: options.limit,
-            split: options.split,
-            submitted: 0,
-            abort: &abort,
-            progress,
-        };
         let produced = produce(
             &mut producer,
             entries,
@@ -1033,11 +1139,41 @@ pub fn convert(
             abort.store(true, Ordering::SeqCst);
         }
         drop(producer);
-        let written = writer
-            .join()
-            .unwrap_or_else(|_| Err(Error::Io(io::Error::other("the output writer panicked"))));
-        (produced, written)
-    });
+        (produced, writer.into_inner().finish())
+    } else {
+        std::thread::scope(|scope| {
+            let (job_tx, job_rx) = bounded(workers);
+            let (order_tx, order_rx) = bounded(workers * 2 + 2);
+            let writer = scope.spawn(move || run_writer(writer, order_rx));
+            for _ in 0..workers {
+                let jobs = job_rx.clone();
+                let ctx = &ctx;
+                scope.spawn(move || run_worker(jobs, ctx));
+            }
+            drop(job_rx);
+
+            let mut producer = producer(Dispatch::Pool {
+                jobs: job_tx,
+                order: order_tx,
+            });
+            let produced = produce(
+                &mut producer,
+                entries,
+                loose,
+                pending,
+                options,
+                separate_files,
+            );
+            if produced.is_err() {
+                abort.store(true, Ordering::SeqCst);
+            }
+            drop(producer);
+            let written = writer
+                .join()
+                .unwrap_or_else(|_| Err(Error::Io(io::Error::other("the output writer panicked"))));
+            (produced, written)
+        })
+    };
 
     let outcome = match (produced, written) {
         (_, Err(e)) if !matches!(e, Error::Cancelled) => return Err(e),
@@ -1066,7 +1202,7 @@ pub fn convert(
 }
 
 fn produce(
-    producer: &mut Producer<'_>,
+    producer: &mut Producer<'_, '_>,
     entries: Option<Box<dyn Entries + Send + '_>>,
     loose: Option<(Box<dyn Read + Send + '_>, Vec<u8>, bool)>,
     pending: Option<Pending>,
@@ -1215,6 +1351,134 @@ mod tests {
             assert_eq!(belnr[0], "1000000000");
             assert_eq!(belnr[39_999], "1000039999");
             assert_eq!(belnr[40_000], "1000000000");
+        }
+    }
+
+    #[test]
+    fn sequential_conversion_matches_the_thread_pool() {
+        let mut loose = Vec::new();
+        encode_bsis_records(20_000, 3, &mut loose);
+        let text = "BUKRS\tHKONT\tZUONR\tGJAHR\tBELNR\tBUZEI\tBUDAT\tBLART\tDMBTR\r\n\
+            0100\t0000123456\t20250601\t2025\t1000000005\t001\t20250601\tPR\t47.12 \r\n";
+        let text = build_archive(BSIS_SIDECAR, "BSIS", "TXT", &[text.as_bytes().to_vec()]);
+        let schema = || Some(bsis());
+        let cases: Vec<(&str, Vec<u8>, Options)> = vec![
+            ("csv", sample_archive(30_000, 3), Options::default()),
+            (
+                "limit",
+                sample_archive(30_000, 3),
+                Options {
+                    limit: Some(45_000),
+                    ..Options::default()
+                },
+            ),
+            (
+                "split limit",
+                sample_archive(30_000, 3),
+                Options {
+                    limit: Some(100),
+                    split: true,
+                    ..Options::default()
+                },
+            ),
+            (
+                "parquet",
+                sample_archive(30_000, 2),
+                Options {
+                    format: Format::Parquet,
+                    ..Options::default()
+                },
+            ),
+            (
+                "split parquet",
+                reference_archive(),
+                Options {
+                    format: Format::Parquet,
+                    split: true,
+                    ..Options::default()
+                },
+            ),
+            (
+                "jsonl",
+                reference_archive(),
+                Options {
+                    format: Format::Jsonl,
+                    ..Options::default()
+                },
+            ),
+            (
+                "loose",
+                loose,
+                Options {
+                    schema: schema(),
+                    ..Options::default()
+                },
+            ),
+            ("text", text, Options::default()),
+            (
+                "lenient",
+                reference_archive(),
+                Options {
+                    record_size: Some(128),
+                    on_error: OnError::Skip,
+                    ..Options::default()
+                },
+            ),
+            (
+                "wrong size",
+                reference_archive(),
+                Options {
+                    record_size: Some(128),
+                    ..Options::default()
+                },
+            ),
+        ];
+        // Split output is a zip, whose timestamps may differ between runs.
+        let unzip = |bytes: Vec<u8>, split: bool| {
+            if !split {
+                return vec![(String::new(), bytes)];
+            }
+            let mut reader = StreamReader::new(Cursor::new(bytes));
+            let mut entries = Vec::new();
+            while let Some(info) = reader.next_entry().unwrap() {
+                let mut body = Vec::new();
+                reader.read_to_end(&mut body).unwrap();
+                entries.push((info.name, body));
+            }
+            entries
+        };
+        for (name, input, options) in cases {
+            let split = options.split;
+            let pooled = convert_bytes(
+                input.clone(),
+                &Options {
+                    threads: 4,
+                    ..options.clone()
+                },
+            );
+            let inline = convert_bytes(
+                input,
+                &Options {
+                    sequential: true,
+                    ..options
+                },
+            );
+            match (pooled, inline) {
+                (Ok((a, x)), Ok((b, y))) => {
+                    assert!(unzip(a, split) == unzip(b, split), "{name}: outputs differ");
+                    assert_eq!(
+                        (x.records, x.shards, &x.warnings),
+                        (y.records, y.shards, &y.warnings),
+                        "{name}"
+                    );
+                }
+                (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string(), "{name}"),
+                (a, b) => panic!(
+                    "{name}: {:?} vs {:?}",
+                    a.map(|r| r.1.records),
+                    b.map(|r| r.1.records)
+                ),
+            }
         }
     }
 

@@ -38,3 +38,6 @@ node_modules/
 
 # Deployment secrets
 .env
+
+# The WebAssembly build of the engine (scripts/build-wasm.sh)
+rust/web/wasm/

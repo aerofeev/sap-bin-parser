@@ -25,6 +25,7 @@
 //! | `GET /api/sample` | a synthetic export to try things with |
 //! | `GET /api/config`, `GET /healthz` | version and limits |
 //! | `GET /stats`, `GET /api/stats`, `GET /metrics` | usage statistics, with the operator's token |
+//! | `POST /api/usage` | the totals of a conversion the browser did itself |
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -48,14 +49,11 @@ use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::archive::schema_from_bytes;
-use crate::convert::{
-    convert, Format, Input, InputKind, Meta, OnError, Options, Output, Progress, Stats,
-};
-use crate::decode::DecimalMode;
+use crate::convert::{convert, Format, Input, InputKind, Meta, Options, Output, Progress, Stats};
 use crate::error::Error;
 use crate::inspect::{inspect, Sample};
+use crate::params::{output_name, ConvertParams};
 use crate::usage::{Conversion, Failure, Usage};
-use crate::writer::Compression;
 use crate::zip::{Entries, EntryInfo};
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
@@ -65,10 +63,16 @@ const FAVICON: &str = include_str!("../web/favicon.svg");
 const STATS_HTML: &str = include_str!("../web/stats.html");
 const STATS_JS: &str = include_str!("../web/stats.js");
 const INTER: &[u8] = include_bytes!("../web/fonts/Inter.var.woff2");
+const WORKER_JS: &str = include_str!("../web/convert-worker.js");
+
+/// The engine compiled to WebAssembly, if it was built (see build.rs).
+mod wasm {
+    include!(concat!(env!("OUT_DIR"), "/wasm.rs"));
+}
 
 /// The page's Content-Security-Policy: nothing from anywhere but here, and
 /// no connection to anywhere but here.
-const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; \
+const CSP: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; font-src 'self'; \
                    connect-src 'self'; form-action 'self'; frame-src 'self'; frame-ancestors 'self'; \
                    base-uri 'none'";
 
@@ -317,6 +321,16 @@ fn router(config: Config, usage: Arc<Usage>) -> Router {
         )
         .route("/fonts/Inter.var.woff2", get(|| async { font(INTER) }))
         .route(
+            "/assets/convert-worker.js",
+            get(|| async { asset("text/javascript; charset=utf-8", WORKER_JS) }),
+        )
+        .route("/assets/wasm/sap_bin_wasm.js", get(wasm_glue))
+        .route("/assets/wasm/sap_bin_wasm_bg.wasm", get(wasm_module))
+        .route(
+            "/api/usage",
+            post(usage_report).layer(DefaultBodyLimit::max(4096)),
+        )
+        .route(
             "/favicon.svg",
             get(|| async { asset("image/svg+xml", FAVICON) }),
         )
@@ -496,7 +510,141 @@ async fn config_info(State(state): State<Shared>) -> Json<serde_json::Value> {
         "local": state.config.local,
         "max_upload_bytes": state.config.max_upload,
         "threads": state.config.threads_per_job(),
+        // The page may convert in the browser itself.
+        "browser": !wasm::WASM.is_empty(),
     }))
+}
+
+/// `GET assets/wasm/sap_bin_wasm.js`: the JavaScript half of the engine's
+/// WebAssembly build.
+async fn wasm_glue() -> Response {
+    if wasm::JS.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    asset("text/javascript; charset=utf-8", wasm::JS)
+}
+
+/// `GET assets/wasm/sap_bin_wasm_bg.wasm`: the engine for the browser.
+/// Megabytes, so it is sent compressed (compressed once, on first request)
+/// and revalidated by ETag rather than downloaded again.
+async fn wasm_module(headers: HeaderMap) -> Response {
+    static GZIP: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    static ZSTD: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    if wasm::WASM.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let etag = format!("\"{}-{}\"", crate::VERSION, wasm::WASM.len());
+    let fresh = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag));
+    let mut response = if fresh {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        let (coding, body): (Option<&str>, &'static [u8]) = if Encoding::Zstd.accepted(&headers) {
+            let body = tokio::task::spawn_blocking(|| {
+                ZSTD.get_or_init(|| zstd::encode_all(wasm::WASM, 9).unwrap_or_default())
+                    .as_slice()
+            })
+            .await
+            .unwrap_or_default();
+            (Some("zstd"), body)
+        } else if Encoding::Gzip.accepted(&headers) {
+            let body = tokio::task::spawn_blocking(|| {
+                GZIP.get_or_init(|| {
+                    let mut encoder =
+                        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+                    let _ = encoder.write_all(wasm::WASM);
+                    encoder.finish().unwrap_or_default()
+                })
+                .as_slice()
+            })
+            .await
+            .unwrap_or_default();
+            (Some("gzip"), body)
+        } else {
+            (None, wasm::WASM)
+        };
+        let mut response = ([(header::CONTENT_TYPE, "application/wasm")], body).into_response();
+        if let Some(coding) = coding {
+            response
+                .headers_mut()
+                .insert(header::CONTENT_ENCODING, HeaderValue::from_static(coding));
+        }
+        response
+    };
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
+    if let Ok(value) = HeaderValue::from_str(&etag) {
+        headers.insert(header::ETAG, value);
+    }
+    response
+}
+
+/// What the page reports after converting in the browser: totals only, the
+/// same ones the service counts for its own conversions.
+#[derive(Deserialize)]
+struct UsageReport {
+    event: String,
+    format: Option<String>,
+    input: Option<String>,
+    table: Option<String>,
+    records: Option<u64>,
+    shards: Option<u64>,
+    bytes_in: Option<u64>,
+    bytes_out: Option<u64>,
+    seconds: Option<f64>,
+    failure: Option<String>,
+}
+
+/// `POST api/usage`: count a conversion the browser did itself. The numbers
+/// are the browser's word, so they are checked for sense and kept apart
+/// under the client `browser`.
+async fn usage_report(State(state): State<Shared>, Json(report): Json<UsageReport>) -> Response {
+    const FORMATS: [&str; 5] = ["csv", "excel", "tsv", "jsonl", "parquet"];
+    let bad = || problem(StatusCode::BAD_REQUEST, "not a usage report", None);
+    match report.event.as_str() {
+        "conversion" => {
+            let Some(format) = report
+                .format
+                .as_deref()
+                .and_then(|f| FORMATS.iter().find(|&&k| k == f))
+            else {
+                return bad();
+            };
+            let input = match report.input.as_deref() {
+                Some("files") => "files",
+                Some("archive") | None => "archive",
+                Some(_) => return bad(),
+            };
+            let seconds = report.seconds.unwrap_or(0.0);
+            let records = report.records.unwrap_or(0);
+            if !(0.0..1e6).contains(&seconds) || records > 100_000_000_000 {
+                return bad();
+            }
+            state.usage.conversion(&Conversion {
+                format,
+                input,
+                client: "browser",
+                table: report.table.as_deref().unwrap_or(""),
+                records,
+                shards: report.shards.unwrap_or(0).min(1_000_000),
+                bytes_in: report.bytes_in.unwrap_or(0).min(1 << 50),
+                bytes_out: report.bytes_out.unwrap_or(0).min(1 << 50),
+                seconds,
+            });
+        }
+        "inspection" => state.usage.inspection(),
+        "sample" => state.usage.sample(),
+        "failure" => state.usage.failure(match report.failure.as_deref() {
+            Some("cancelled") => Failure::Cancelled,
+            Some("server") => Failure::Server,
+            _ => Failure::Input,
+        }),
+        _ => return bad(),
+    }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 #[derive(Deserialize)]
@@ -629,79 +777,6 @@ fn error_status(error: &Error) -> StatusCode {
             StatusCode::BAD_REQUEST
         }
         _ => StatusCode::INTERNAL_SERVER_ERROR,
-    }
-}
-
-/// Query parameters of `/api/convert`, mirroring the CLI flags.
-#[derive(Debug, Default, Deserialize)]
-struct ConvertParams {
-    format: Option<String>,
-    delimiter: Option<String>,
-    bom: Option<bool>,
-    decimals: Option<String>,
-    on_error: Option<String>,
-    record_size: Option<usize>,
-    text_encoding: Option<String>,
-    compression: Option<String>,
-    limit: Option<u64>,
-    split: Option<bool>,
-    input: Option<String>,
-    name: Option<String>,
-    job: Option<String>,
-    /// Each uploaded `file` part is one member of the export (shards, and
-    /// optionally the sidecar), rather than the whole export.
-    multi: Option<bool>,
-}
-
-impl ConvertParams {
-    fn options(&self, threads: usize) -> Result<Options, String> {
-        let mut options = Options {
-            threads,
-            ..Options::default()
-        };
-        if let Some(format) = self.format.as_deref().filter(|f| !f.is_empty()) {
-            options.format = Format::parse(format).ok_or(format!("unknown format '{format}'"))?;
-        }
-        if let Some(delimiter) = self.delimiter.as_deref().filter(|d| !d.is_empty()) {
-            let delimiter = if delimiter == "\\t" || delimiter == "tab" {
-                "\t"
-            } else {
-                delimiter
-            };
-            match delimiter.as_bytes() {
-                [b] if b.is_ascii() && *b != b'"' && *b != b'\r' && *b != b'\n' => {
-                    options.delimiter = *b
-                }
-                _ => return Err("the delimiter must be a single character".into()),
-            }
-        }
-        options.bom = self.bom.unwrap_or(false);
-        options.decimals = match self.decimals.as_deref() {
-            None | Some("") | Some("exact") => DecimalMode::Exact,
-            Some("float") => DecimalMode::Float,
-            Some(other) => return Err(format!("decimals must be exact or float, not '{other}'")),
-        };
-        options.on_error = match self.on_error.as_deref() {
-            None | Some("") | Some("stop") => OnError::Stop,
-            Some("skip") => OnError::Skip,
-            Some(other) => return Err(format!("on_error must be stop or skip, not '{other}'")),
-        };
-        options.record_size = self.record_size.filter(|&s| s > 0);
-        options.text_encoding = self.text_encoding.clone().filter(|e| !e.is_empty());
-        if let Some(compression) = self.compression.as_deref().filter(|c| !c.is_empty()) {
-            options.compression = Compression::parse(compression)
-                .ok_or(format!("unknown compression '{compression}'"))?;
-        }
-        options.limit = self.limit.filter(|&l| l > 0);
-        options.split = self.split.unwrap_or(false);
-        options.input_kind = match self.input.as_deref() {
-            None | Some("") | Some("auto") => InputKind::Auto,
-            Some("bin") => InputKind::Bin,
-            Some("txt") | Some("text") => InputKind::Text,
-            Some(other) => return Err(format!("input must be auto, bin or txt, not '{other}'")),
-        };
-        options.name_hint = self.name.clone();
-        Ok(options)
     }
 }
 
@@ -1114,30 +1189,6 @@ fn boundary_of(headers: &HeaderMap) -> Option<String> {
         .and_then(|v| multer::parse_boundary(v).ok())
 }
 
-fn attachment_name(meta: &Meta, options: &Options) -> String {
-    let stem: String = meta
-        .table
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || "-_.".contains(c) {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let stem = if stem.is_empty() {
-        "export".to_owned()
-    } else {
-        stem
-    };
-    if options.split {
-        format!("{stem}.{}.zip", options.format.extension())
-    } else {
-        format!("{stem}.{}", options.format.extension())
-    }
-}
-
 async fn convert_upload(
     State(state): State<Shared>,
     Query(params): Query<ConvertParams>,
@@ -1393,7 +1444,7 @@ fn download_response(
     encoding: Encoding,
     output: mpsc::Receiver<io::Result<Bytes>>,
 ) -> Response {
-    let filename = attachment_name(meta, options);
+    let filename = output_name(&meta.table, options);
     let content_type = if options.split {
         "application/zip"
     } else {
@@ -2062,6 +2113,46 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let text = String::from_utf8(text.to_vec()).unwrap();
         assert!(text.contains("sapbin_records_total 1234\n"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn counts_what_the_browser_converted() {
+        let app = app(Config {
+            stats_token: Some(TOKEN.into()),
+            ..config("")
+        });
+        let post = |body: &str| {
+            HttpRequest::builder()
+                .method(Method::POST)
+                .uri("/api/usage")
+                .header(header::HOST, "tools.example.com")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_owned()))
+                .unwrap()
+        };
+        let conversion = r#"{"event":"conversion","format":"excel","input":"files","table":"bkpf",
+            "records":5000,"shards":2,"bytes_in":630000,"bytes_out":900000,"seconds":0.02}"#;
+        assert_eq!(send(&app, post(conversion)).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(
+            send(&app, post(r#"{"event":"inspection"}"#)).await.0,
+            StatusCode::NO_CONTENT
+        );
+        for nonsense in [
+            r#"{"event":"conversion","format":"exe","records":1}"#,
+            r#"{"event":"conversion","format":"csv","records":1e300}"#,
+            r#"{"event":"conversion","format":"csv","input":"disk"}"#,
+            r#"{"event":"party"}"#,
+        ] {
+            let status = send(&app, post(nonsense)).await.0;
+            assert!(status.is_client_error(), "{nonsense}: {status}");
+        }
+        let (_, body) = send(&app, stats_request("/api/stats", Some(TOKEN))).await;
+        let stats: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(stats["totals"]["conversions"], 1);
+        assert_eq!(stats["totals"]["inspections"], 1);
+        assert_eq!(stats["clients"]["browser"]["records"], 5000);
+        assert_eq!(stats["formats"]["excel"]["conversions"], 1);
+        assert_eq!(stats["tables"]["BKPF"]["records"], 5000);
     }
 
     #[test]

@@ -179,7 +179,8 @@
       <div>
         <h2>Nothing is stored</h2>
         <ul>
-          <li>Your file is read as a stream and converted chunk by chunk as it arrives. The result streams straight back into your downloads.</li>
+          <li>Where your browser allows it, the conversion runs in this page: the same engine, compiled to WebAssembly. Then your file goes nowhere at all, and afterwards the service is told only the totals.</li>
+          <li>Otherwise your file is read as a stream and converted chunk by chunk as it arrives. The result streams straight back into your downloads.</li>
           <li>There is no temporary file, no database and no copy. Logs hold the method, path, status and timing of each request, never names or contents.</li>
           <li>To show progress, the server keeps a few counters under a random id your browser made up, and forgets them five minutes after the conversion.</li>
           <li>The service keeps running totals (how many records were converted, in which formats, from which SAP tables), never tied to a person, an address or a file.</li>

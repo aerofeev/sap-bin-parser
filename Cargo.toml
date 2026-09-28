@@ -2,7 +2,9 @@
 # finds the engine crate; the Python package lives alongside it in src/.
 [workspace]
 resolver = "2"
-members = ["rust"]
+members = ["rust", "rust/wasm"]
+# The WebAssembly bindings build for the browser only: scripts/build-wasm.sh.
+default-members = ["rust"]
 
 [profile.release]
 lto = "fat"

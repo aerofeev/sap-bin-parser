@@ -145,7 +145,7 @@
     drawChart(days);
     shares($("formats"), data.formats, { csv: "CSV", excel: "CSV for Excel", tsv: "TSV", parquet: "Parquet", jsonl: "JSON Lines" });
     shares($("inputs"), data.inputs, { archive: "One file (zip or .BIN)", files: "A folder or several files" });
-    shares($("clients"), data.clients, { page: "The web page", api: "API (curl, scripts)" });
+    shares($("clients"), data.clients, { browser: "The page, in the browser", page: "The page, on the server", api: "API (curl, scripts)" });
     tables();
     service(t);
   }

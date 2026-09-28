@@ -3,12 +3,16 @@
 // CSS in styles/app.css, and the result is committed as app.css.)
 //
 // Flow: choose an export (a .zip, an unzipped folder, or separate files) ->
-// send the first 4 MiB and last 256 KiB of its first file to api/inspect
-// for an instant description and preview -> optionally edit the schema ->
-// convert by submitting the files in a form to a hidden frame, so the
-// browser's own download manager streams the result to disk (any size, any
-// browser) -> poll api/jobs/{id} for progress. Every URL is relative, so the
-// page works at a domain root or under a path such as /sap-bin-parser/.
+// describe it from the first 4 MiB and last 256 KiB of its first file, for
+// an instant preview -> optionally edit the schema -> convert.
+//
+// Where the browser allows it, all of that runs in the page itself: the
+// engine, compiled to WebAssembly, in a worker, so the export never leaves
+// the computer. Otherwise (and in the local app, where native threads are
+// faster) the server does it: api/inspect, then a chunked job whose output
+// the browser's own download manager streams to disk, with api/jobs/{id}
+// for progress. Every URL is relative, so the page works at a domain root
+// or under a path such as /sap-bin-parser/.
 "use strict";
 
 (() => {
@@ -28,6 +32,7 @@
     report: null,
     job: null,
     rows: [], // schema editor rows
+    inBrowser: false, // convert with the engine in the page (see `engine`)
     inspected: null, // inspectOptions() of the latest inspection
   };
   const dataFile = () => state.files[0] || null;
@@ -93,6 +98,96 @@
   };
   const byShard = (a, b) => shardIndex(a.name) - shardIndex(b.name) || a.name.localeCompare(b.name);
 
+  // ---------- the engine in this browser ----------
+
+  // The same engine as the server's, compiled to WebAssembly, running in a
+  // worker (assets/convert-worker.js). The export never leaves the computer;
+  // afterwards the service hears the totals only, for its usage statistics.
+  const engine = {
+    worker: null,
+    calls: new Map(),
+
+    /**
+     * A worker, WebAssembly, and a private file system to write to. (Whether
+     * the worker may write to it synchronously, it checks for itself: that
+     * is only visible from inside a worker.)
+     */
+    canRun() {
+      return Boolean(window.Worker && window.WebAssembly && navigator.storage && navigator.storage.getDirectory);
+    },
+
+    call(type, message, onProgress) {
+      if (!this.worker) {
+        this.worker = new Worker("assets/convert-worker.js", { type: "module" });
+        this.worker.onmessage = ({ data }) => {
+          const call = this.calls.get(data.id);
+          if (!call) return;
+          if (data.progress) {
+            if (call.onProgress) call.onProgress(data.progress);
+            return;
+          }
+          this.calls.delete(data.id);
+          if (data.error) call.reject(Object.assign(new Error(data.error), { hint: data.hint, unavailable: data.unavailable }));
+          else call.resolve(data.result);
+        };
+        this.worker.onerror = (event) => {
+          event.preventDefault();
+          this.stop(Object.assign(new Error("The in-browser engine did not start."), { unavailable: true }));
+        };
+      }
+      const id = randomId().replace(/-/g, "");
+      return new Promise((resolve, reject) => {
+        this.calls.set(id, { resolve, reject, onProgress });
+        this.worker.postMessage({ id, type, ...message });
+      });
+    },
+
+    /** Stop whatever it is doing, at once (a cancelled conversion). */
+    stop(error = Object.assign(new Error("Cancelled."), { cancelled: true })) {
+      if (this.worker) this.worker.terminate();
+      this.worker = null;
+      for (const call of this.calls.values()) call.reject(error);
+      this.calls.clear();
+    },
+  };
+
+  /**
+   * Tell the service what this browser converted, for its usage statistics:
+   * the counts, the format and the SAP table name. Never a file, a field or
+   * a value.
+   */
+  function reportUsage(event) {
+    if (state.config.local) return;
+    fetch("api/usage", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(event),
+      keepalive: true,
+    }).catch(() => {});
+  }
+
+  function showWhere() {
+    const badge = $("mode-badge");
+    badge.hidden = false;
+    if (state.config.local) {
+      badge.textContent = "Running on this computer";
+      $("where-text").textContent = "right here on your computer";
+    } else if (state.inBrowser) {
+      badge.textContent = "Converts in your browser";
+      $("where-text").textContent = "right here in your browser, so the file never leaves your computer";
+    } else {
+      badge.textContent = "Stores nothing";
+      $("where-text").textContent = "on the server";
+    }
+  }
+
+  /** The in-browser engine is unavailable after all: use the server. */
+  function fallBack() {
+    state.inBrowser = false;
+    engine.stop(Object.assign(new Error("The in-browser engine is unavailable."), { unavailable: true }));
+    showWhere();
+  }
+
   // ---------- startup ----------
 
   async function loadConfig() {
@@ -103,15 +198,10 @@
       return;
     }
     $("version").textContent = state.config.version;
-    const badge = $("mode-badge");
-    badge.hidden = false;
-    if (state.config.local) {
-      badge.textContent = "Running on this computer";
-      $("where-text").textContent = "right here on your computer";
-    } else {
-      badge.textContent = "Stores nothing";
-      $("where-text").textContent = "on the server";
-    }
+    // `?convert=server` keeps conversions on the server (and tests that path).
+    const onServer = new URLSearchParams(location.search).get("convert") === "server";
+    state.inBrowser = Boolean(state.config.browser) && !state.config.local && !onServer && engine.canRun();
+    showWhere();
   }
 
   // ---------- choosing files ----------
@@ -175,8 +265,17 @@
     button.disabled = true;
     button.textContent = "Making a sample…";
     try {
-      const response = await fetch("api/sample?records=20000&shards=3");
-      const blob = await response.blob();
+      let blob;
+      if (state.inBrowser) {
+        try {
+          blob = new Blob([await engine.call("sample", { records: 20000, shards: 3 })]);
+          reportUsage({ event: "sample" });
+        } catch (error) {
+          if (!error.unavailable) throw error;
+          fallBack();
+        }
+      }
+      if (!blob) blob = await (await fetch("api/sample?records=20000&shards=3")).blob();
       state.schema = null;
       state.schemaEdited = false;
       acceptFiles([new File([blob], "BSIS.QUERY.sample.zip", { type: "application/zip" })]);
@@ -232,6 +331,41 @@
   // suggested record size, which would otherwise re-inspect under the click.
   const inspectOptions = () => `${$("record-size").value.trim()}|${$("text-encoding").value}`;
 
+  /** Describe an export from the start and end of its first file. */
+  async function describe(target) {
+    const request = {
+      head: target.slice(0, HEAD_BYTES),
+      tail: target.size > HEAD_BYTES ? target.slice(Math.max(0, target.size - TAIL_BYTES)) : target,
+      size: target.size,
+      name: state.exportName || target.name,
+      schema: state.schema && dataFile() ? state.schema : null,
+      recordSize: $("record-size").value.trim(),
+      textEncoding: $("text-encoding").value,
+    };
+    if (state.inBrowser) {
+      try {
+        const described = await engine.call("inspect", { ...request, recordSize: Number(request.recordSize) || 0 });
+        reportUsage({ event: "inspection" });
+        return described;
+      } catch (error) {
+        if (!error.unavailable) throw error;
+        fallBack();
+      }
+    }
+    const form = new FormData();
+    form.append("head", request.head, "head");
+    form.append("tail", request.tail, "tail");
+    form.append("size", String(request.size));
+    form.append("name", request.name);
+    if (request.schema) form.append("schema", request.schema, baseName(request.schema.name));
+    if (request.recordSize) form.append("record_size", request.recordSize);
+    form.append("text_encoding", request.textEncoding);
+    const response = await fetch("api/inspect", { method: "POST", body: form });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || `The server answered ${response.status}.`);
+    return body;
+  }
+
   async function inspect() {
     const target = dataFile() || state.schema;
     if (!target) return;
@@ -241,22 +375,10 @@
     $("notes").replaceChildren();
     $("inspect-loading").hidden = false;
 
-    const form = new FormData();
-    form.append("head", target.slice(0, HEAD_BYTES), "head");
-    form.append("tail", target.size > HEAD_BYTES ? target.slice(Math.max(0, target.size - TAIL_BYTES)) : target, "tail");
-    form.append("size", String(target.size));
-    form.append("name", state.exportName || target.name);
-    if (state.schema && dataFile()) form.append("schema", state.schema, baseName(state.schema.name));
-    const recordSize = $("record-size").value.trim();
-    if (recordSize) form.append("record_size", recordSize);
-    form.append("text_encoding", $("text-encoding").value);
     state.inspected = inspectOptions();
-
     let report;
     try {
-      const response = await fetch("api/inspect", { method: "POST", body: form });
-      report = await response.json();
-      if (!response.ok) throw new Error(report.error || `The server answered ${response.status}.`);
+      report = await describe(target);
     } catch (error) {
       $("inspect-loading").hidden = true;
       $("notes").replaceChildren(el("div", { class: "alert error" }, error.message || String(error)));
@@ -597,23 +719,26 @@
     return opts.split ? `${table}.${extension(opts)}.zip` : `${table}.${extension(opts)}`;
   }
 
-  function query(opts, job) {
-    const params = new URLSearchParams();
-    params.set("format", opts.format);
-    if (opts.bom) params.set("bom", "true");
-    if (opts.split) params.set("split", "true");
-    if (opts.decimals !== "exact") params.set("decimals", opts.decimals);
-    if (opts.on_error !== "stop") params.set("on_error", opts.on_error);
-    if (opts.record_size) params.set("record_size", opts.record_size);
-    if (opts.limit) params.set("limit", opts.limit);
-    if (opts.format === "csv" && opts.delimiter !== ",") params.set("delimiter", opts.delimiter);
-    if (opts.format === "parquet" && opts.compression !== "zstd") params.set("compression", opts.compression);
-    if (state.report && state.report.format === "text") params.set("text_encoding", opts.text_encoding);
-    if (multi()) params.set("multi", "true");
-    if (state.exportName) params.set("name", state.exportName);
-    if (job) params.set("job", job);
-    return params.toString();
+  /** The conversion's parameters by the HTTP API's names, which the engine in the page takes too. */
+  function params(opts, job) {
+    const p = { format: opts.format };
+    if (opts.bom) p.bom = true;
+    if (opts.split) p.split = true;
+    if (opts.decimals !== "exact") p.decimals = opts.decimals;
+    if (opts.on_error !== "stop") p.on_error = opts.on_error;
+    if (opts.record_size) p.record_size = Number(opts.record_size);
+    if (opts.limit) p.limit = Number(opts.limit);
+    if (opts.format === "csv" && opts.delimiter !== ",") p.delimiter = opts.delimiter;
+    if (opts.format === "parquet" && opts.compression !== "zstd") p.compression = opts.compression;
+    if (state.report && state.report.format === "text") p.text_encoding = opts.text_encoding;
+    if (multi()) p.multi = true;
+    if (state.exportName) p.name = state.exportName;
+    if (job) p.job = job;
+    return p;
   }
+
+  const query = (opts, job) =>
+    new URLSearchParams(Object.entries(params(opts, job)).map(([key, value]) => [key, String(value)])).toString();
 
   function updateOutput() {
     if (!state.report) return;
@@ -718,6 +843,10 @@
   async function startConversion() {
     if (!dataFile() || state.job) return;
     const opts = options();
+    if (state.inBrowser) {
+      convertHere(opts);
+      return;
+    }
     const id = randomId();
     const size = state.files.reduce((n, f) => n + f.size, 0);
     const job = { id, started: Date.now(), size, name: outputName(opts), timer: null, uploaded: 0 };
@@ -769,6 +898,75 @@
     }
   }
 
+  /** Convert with the engine in the page, then hand the file to the downloads. */
+  async function convertHere(opts) {
+    const size = state.files.reduce((n, f) => n + f.size, 0);
+    const job = { id: randomId(), started: Date.now(), size, name: outputName(opts), timer: null, here: true };
+    state.job = job;
+    $("go").disabled = true;
+    $("result").hidden = true;
+    $("progress").hidden = false;
+    $("meter-fill").style.width = "0";
+    $("progress-text").textContent = "Starting…";
+    try {
+      const { stats, file } = await engine.call(
+        "convert",
+        { files: state.files, schema: state.schema, params: params(opts) },
+        (p) => {
+          if (state.job === job) showProgress(p.records, p.bytes, (Date.now() - job.started) / 1000, size);
+        },
+      );
+      if (state.job !== job) return;
+      job.name = stats.file_name;
+      saveFile(file, stats.file_name);
+      reportUsage({
+        event: "conversion",
+        format: opts.bom ? "excel" : opts.format,
+        input: multi() ? "files" : "archive",
+        table: stats.table,
+        records: stats.records,
+        shards: stats.shards,
+        bytes_in: size,
+        bytes_out: stats.bytes_out,
+        seconds: stats.seconds,
+      });
+      finish({ state: "done", ...stats });
+    } catch (error) {
+      if (state.job !== job) return; // cancelled
+      if (error.unavailable) {
+        // Could not run here after all: convert on the server instead.
+        state.job = null;
+        fallBack();
+        startConversion();
+        return;
+      }
+      reportUsage({ event: "failure", failure: "input" });
+      finish({ state: "failed", error: error.message, hint: error.hint });
+    }
+  }
+
+  function saveFile(file, name) {
+    const url = URL.createObjectURL(file);
+    const link = el("a", { href: url, download: name });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    // Long enough for the browser to copy even a large file into Downloads.
+    setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000);
+  }
+
+  function showProgress(records, bytesIn, elapsed, size) {
+    const fraction = Math.min(1, bytesIn / Math.max(1, size));
+    $("meter-fill").style.width = `${(fraction * 100).toFixed(1)}%`;
+    const rate = elapsed > 0 ? records / elapsed : 0;
+    const left = fraction > 0.02 ? (elapsed / fraction) * (1 - fraction) : NaN;
+    const parts = [`${number.format(records)} records`];
+    if (rate > 0) parts.push(`${roughly(Math.round(rate))} per second`);
+    if (isFinite(left) && fraction < 1) parts.push(`about ${duration(left)} left`);
+    if (fraction >= 1) parts.push("finishing");
+    $("progress-text").textContent = parts.join(" · ");
+  }
+
   async function poll() {
     const job = state.job;
     if (!job) return;
@@ -791,15 +989,7 @@
           "Waiting for the download to start. If your browser asks whether to allow downloads from this site, allow it.";
         return;
       }
-      const fraction = Math.min(1, status.bytes_in / Math.max(1, job.size));
-      $("meter-fill").style.width = `${(fraction * 100).toFixed(1)}%`;
-      const rate = status.elapsed > 0 ? status.records / status.elapsed : 0;
-      const left = fraction > 0.02 ? (status.elapsed / fraction) * (1 - fraction) : NaN;
-      const parts = [`${number.format(status.records)} records`];
-      if (rate > 0) parts.push(`${roughly(Math.round(rate))} per second`);
-      if (isFinite(left) && fraction < 1) parts.push(`about ${duration(left)} left`);
-      if (fraction >= 1) parts.push("finishing");
-      $("progress-text").textContent = parts.join(" · ");
+      showProgress(status.records, status.bytes_in, status.elapsed, job.size);
     } else {
       finish(status);
     }
@@ -818,7 +1008,9 @@
       result.replaceChildren(
         el("div", { class: "alert ok" },
           el("strong", {}, `Converted ${number.format(status.records)} records from ${shards} in ${duration(status.seconds)}.`),
-          el("p", {}, `Your browser saved it as ${job ? job.name : "a download"}.`)),
+          el("p", {}, job && job.here
+            ? `Converted in your browser: the file never left your computer. Saved as ${job.name}.`
+            : `Your browser saved it as ${job ? job.name : "a download"}.`)),
         ...(status.warnings || []).map((w) => el("div", { class: "alert warn" }, w)));
     } else if (status.state === "cancelled") {
       result.replaceChildren(el("div", { class: "alert info" }, "Cancelled. Nothing was kept."));
@@ -835,6 +1027,11 @@
     const job = state.job;
     if (!job) return;
     finish({ state: "cancelled" }); // also stops the upload loop
+    if (job.here) {
+      engine.stop();
+      reportUsage({ event: "failure", failure: "cancelled" });
+      return;
+    }
     $("sink").src = "about:blank";
     try {
       await fetch(`api/jobs/${job.id}/cancel`, { method: "POST" });

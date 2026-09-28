@@ -1033,8 +1033,8 @@ pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
 }
 
 fn dos_now() -> (u16, u16) {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let secs = web_time::SystemTime::now()
+        .duration_since(web_time::SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs()) as i64;
     let rem = secs.rem_euclid(86_400);
     let (year, month, day) = civil_from_days(secs.div_euclid(86_400));

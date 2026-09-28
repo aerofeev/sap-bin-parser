@@ -1,0 +1,20 @@
+[package]
+name = "sap-bin-wasm"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.86"
+authors = ["Alexander Erofeev", "eidox ai"]
+description = "The sap-bin engine for the browser: converts SAP binary exports without them leaving the user's machine"
+license = "MIT"
+repository = "https://github.com/aerofeev/sap-bin-parser"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+js-sys = "0.3.106"
+sap-bin = { path = "..", default-features = false }
+serde_json = "1.0.151"
+wasm-bindgen = "0.2.129"
+web-sys = { version = "0.3.106", features = ["Blob", "File", "FileReaderSync"] }

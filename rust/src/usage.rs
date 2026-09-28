@@ -100,8 +100,9 @@ pub struct Snapshot {
     /// By input shape: `archive` (one file) or `files` (a folder or several
     /// files).
     pub inputs: BTreeMap<String, Counts>,
-    /// By client: `page` (the chunked protocol the page uses) or `api`
-    /// (a single request, as from curl).
+    /// By client: `browser` (the page converting in the browser, as it
+    /// reported), `page` (the page converting on the server, through the
+    /// chunked protocol) or `api` (a single request, as from curl).
     pub clients: BTreeMap<String, Counts>,
     /// By SAP table name.
     pub tables: BTreeMap<String, Counts>,
