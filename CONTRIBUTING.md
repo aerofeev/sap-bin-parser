@@ -21,6 +21,7 @@ rules goes into both, with a case in `tests/test_cross_implementation.py`.
 | `tests/` | Python tests, including the cross-implementation suite |
 | `rust/web/tests/` | Browser end-to-end test (Playwright) |
 | `scripts/` | `compare.py` for real exports, `prove-stores-nothing.sh` |
+| `docs/`, `docs/ru/` | The user documentation, in English and Russian, linked from `README.md` and `README.ru.md`. A change to one language goes into the other, and the navigation lines at the top of each page stay in step |
 
 ## Checks
 
