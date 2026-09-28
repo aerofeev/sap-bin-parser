@@ -29,3 +29,6 @@ DATA.*.TXT
 .vscode/
 .idea/
 .DS_Store
+
+# Rust
+/target/
