@@ -59,6 +59,7 @@ whose upload goes quiet for ten minutes is cancelled.
 | `POST api/inspect` | describe an export from a multipart `head` (its first bytes), and optionally `tail`, `size`, `schema`, `record_size` |
 | `GET api/sample` | a synthetic export (`records`, `shards`) |
 | `GET api/config`, `GET healthz` | version and limits |
+| `POST api/usage` | the totals of a conversion the page did in the browser, as JSON (`event`, `format`, `input`, `table`, `records`, `shards`, `bytes_in`, `bytes_out`, `seconds`), for the usage statistics |
 | `GET api/stats`, `GET metrics` | usage statistics as JSON, or for Prometheus; with the operator's token (`Authorization: Bearer ...`), and only when one is set |
 
 Downloads of CSV, TSV and JSON Lines are compressed on the wire when the request accepts
@@ -74,7 +75,7 @@ compression follows the `Accept-Encoding` of the request that created it.
 
 | | |
 |---|---|
-| `format` | `csv`, `tsv`, `jsonl`, `parquet` |
+| `format` | `csv`, `tsv`, `jsonl`, `parquet`, `arrow` (Arrow IPC stream) |
 | `split` | `true`: a zip with one file per shard |
 | `limit` | stop after this many records |
 | `record_size` | override the schema's |

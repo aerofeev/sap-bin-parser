@@ -29,6 +29,15 @@ nothing:
   temporary file and a rename). It is the only thing the service ever writes, and the
   `strace` proof checks exactly that.
 
+- In a current browser the page converts the export itself, with the engine compiled to
+  WebAssembly, and uploads nothing. It then reports the totals (records, shards, format,
+  SAP table name, time) to `api/usage` for the statistics; the server checks them for
+  sense and counts them under the client `browser`.
+- The table viewer (Perspective) needs `blob:` scripts and workers, so it runs in a
+  same-origin frame with its own policy (`VIEWER_CSP` in `rust/src/server.rs`). The page
+  itself keeps the strict policy, which admits `'wasm-unsafe-eval'` for the engine and
+  nothing else new. Both policies allow connections to the service's own origin only.
+
 For the strongest guarantee, use the app: it runs the same page on your own machine and
 your files never leave it.
 

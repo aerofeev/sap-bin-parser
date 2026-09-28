@@ -17,11 +17,35 @@ stored ([how](privacy.md)).
 2. **Glance.** Within a second the page shows the table, the shard count, the record count,
    the record geometry and the first 20 records. It reads only the first 4 MB and the last
    256 KB of the file to do this.
-3. **Convert.** Pick CSV, CSV for Excel, Parquet or JSON Lines and press the button. Your
-   browser's download manager saves the result, so output of any size goes straight to
-   disk, while the page shows records per second and the time left.
+3. **Convert.** Pick CSV, CSV for Excel, Parquet or JSON Lines and press the button. The
+   page shows records per second and the time left, and the result lands in your
+   downloads.
+
+## Converted in your browser
+
+Where the browser allows it, the page does the work itself: the same engine as the server
+and the app, compiled to WebAssembly, runs in a worker in the page. The export is read from
+your disk and never uploaded. The result is written to the browser's private storage for
+this site as it is produced, which keeps memory flat whatever the size, and then handed to
+your downloads. That is also why it is fast over any connection, and why a flaky network
+cannot interrupt it. The badge at the top reads *Converts in your browser* when this is
+the case.
+
+It needs current Chrome, Edge, Firefox or Safari. Anywhere else, the page converts on the
+server instead, streaming the upload in and the result back
+([how](privacy.md)). Add `?convert=server` to the address to choose that yourself. The app
+on your own computer always converts through its local server, which can use every core.
 
 ![A finished conversion](images/convert.png)
+
+## Explore the records
+
+*Explore records* opens the export in [Perspective](https://perspective-dev.github.io), a
+table viewer for large data: sort, filter, group, pivot, and chart, in the page. Choose how
+many records to load, from the first 100 000 to all of them; a few million are
+comfortable, and more need a browser with plenty of memory. The records are converted in
+your browser as Apache Arrow, with amounts as floating point. Perspective is served from
+the same place as the page and runs in a frame of its own ([why](privacy.md)).
 
 ## What it accepts
 

@@ -86,6 +86,23 @@ clear error before any download starts, and a failure mid-stream aborts the down
 truncated file is never mistaken for a complete one. The Python and Rust implementations
 are held to byte-identical output in CI on exports built to hit every awkward corner.
 
+### Convert where the data is
+
+Over the internet a conversion is limited by the network, not the engine, and a dropped
+connection loses it. So the hosted page converts in the browser where it can: the engine,
+compiled to WebAssembly, runs in a worker and writes to the browser's private storage.
+This is faster than any upload, is not affected by a flaky connection, and gives the
+strongest privacy claim a web page can make: the file never leaves the computer. The server
+path stays as the fallback, and the local app keeps it, since native threads beat one
+browser thread. The service still counts browser conversions, from the totals the page
+reports.
+
+### Look before you convert
+
+A converted file is only useful once someone looks at it. *Explore records* puts the export
+into Perspective, which handles millions of rows, sorting, pivots and charts. It is served
+from the binary and isolated in a frame, so it changes nothing about what leaves the page.
+
 ## Naming
 
 "sap-bin" is what people type into a search box, so it stays as the package, command and
@@ -110,6 +127,4 @@ the name: the word is heavily taken and tells a search engine nothing about SAP 
 
 - **More SAP field types** (`X`, `I`, `F`, `b`, `s`) as real exports show up with them.
 - **Code signing** for the Windows and macOS apps, to remove the first-run warnings.
-- **A WebAssembly build** of the engine, so the hosted page could also convert entirely
-  in the browser for users who prefer that.
 - **Parallel Parquet encoding** across row groups, the one stage still single-threaded.

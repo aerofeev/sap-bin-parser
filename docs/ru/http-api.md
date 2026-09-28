@@ -60,6 +60,7 @@ wait
 | `POST api/inspect` | описать выгрузку по multipart-части `head` (первые байты файла) и, по желанию, `tail`, `size`, `schema`, `record_size` |
 | `GET api/sample` | синтетическая выгрузка (`records`, `shards`) |
 | `GET api/config`, `GET healthz` | версия и ограничения |
+| `POST api/usage` | итоги конвертации, которую страница выполнила в браузере, в JSON (`event`, `format`, `input`, `table`, `records`, `shards`, `bytes_in`, `bytes_out`, `seconds`), для статистики использования |
 | `GET api/stats`, `GET metrics` | статистика использования в JSON или для Prometheus; с токеном оператора (`Authorization: Bearer ...`) и только если он задан |
 
 CSV, TSV и JSON Lines передаются сжатыми, если запрос это допускает (`Accept-Encoding`:
@@ -75,7 +76,7 @@ zstd, иначе gzip); браузеры распаковывают их при 
 
 | | |
 |---|---|
-| `format` | `csv`, `tsv`, `jsonl`, `parquet` |
+| `format` | `csv`, `tsv`, `jsonl`, `parquet`, `arrow` (поток Arrow IPC) |
 | `split` | `true`: zip-архив с отдельным файлом на каждый шард |
 | `limit` | остановиться после стольких записей |
 | `record_size` | заменить размер записи из схемы |

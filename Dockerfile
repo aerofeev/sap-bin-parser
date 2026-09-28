@@ -11,10 +11,26 @@
 #   docker run --rm --read-only -p 127.0.0.1:8080:8080 -v sap-bin-usage:/data \
 #     -e SAPBIN_STATS_FILE=/data/usage.json -e SAPBIN_STATS_TOKEN=... sap-bin
 
+# The Perspective table viewer, from npm (served from the binary, never a CDN).
+FROM node:22-bookworm-slim AS web
+WORKDIR /src/rust/web
+COPY rust/web/package.json rust/web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY rust/web/vendor-perspective.mjs ./
+RUN npm run perspective
+
 FROM rust:1.94-bookworm AS build
+# clang builds the zstd library Parquet uses for WebAssembly too.
+RUN apt-get update && apt-get install -y --no-install-recommends clang \
+    && rm -rf /var/lib/apt/lists/* \
+    && rustup target add wasm32-unknown-unknown
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY rust ./rust
+COPY scripts/build-wasm.sh ./scripts/
+COPY --from=web /src/rust/web/perspective ./rust/web/perspective
+# The engine for the browser, then the binary that embeds it and the viewer.
+RUN scripts/build-wasm.sh
 RUN cargo build --release --locked -p sap-bin
 # An empty /data owned by the runtime user, so a volume mounted there is
 # writable by it.

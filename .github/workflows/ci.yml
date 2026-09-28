@@ -76,6 +76,12 @@ jobs:
           cargo build --release --locked
           target/release/sap-bin --version
           target/release/sap-bin bench --records 200000
+      - name: The engine alone, and its WebAssembly bindings
+        if: runner.os == 'Linux'
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo clippy --locked -p sap-bin --no-default-features -- -D warnings
+          cargo clippy --locked -p sap-bin-wasm --target wasm32-unknown-unknown -- -D warnings
 
   cross-implementation:
     # The Python library and the Rust engine must produce identical output.
@@ -97,27 +103,23 @@ jobs:
         run: pytest -q tests/test_cross_implementation.py
 
   browser:
-    # The web page, driven end to end in Chromium.
+    # The web page, driven end to end in Chromium: converting in the browser
+    # (the engine as WebAssembly) at the domain root, and on the server under
+    # a path prefix, with the Perspective table viewer on both.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Build
-        run: cargo build --release --locked
-      - name: Install Playwright
-        working-directory: rust/web/tests
-        run: |
-          npm install --no-audit --no-fund
-          npx playwright install --with-deps chromium
       - name: Check the page's JavaScript parses
         run: |
-          node --check rust/web/app.js
-          node --check rust/web/stats.js
-      - name: Check the compiled stylesheet is up to date
+          for f in app.js stats.js convert-worker.js explorer.js; do node --check "rust/web/$f"; done
+      - name: Check the compiled stylesheet is up to date, and fetch Perspective
         working-directory: rust/web
         run: |
           npm ci --no-audit --no-fund
@@ -126,11 +128,22 @@ jobs:
             echo "::error::rust/web/app.css is stale: run 'npm run build:css' in rust/web and commit it"
             exit 1
           }
-      - name: Run at the domain root
+          npm run perspective
+      - name: Build the engine for the browser
+        run: scripts/build-wasm.sh
+      - name: Build, with both embedded
+        run: cargo build --release --locked
+      - name: Install Playwright
+        working-directory: rust/web/tests
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Run at the domain root, converting in the browser
         run: node rust/web/tests/e2e.mjs target/release/sap-bin target/e2e
-      - name: Run under a path prefix, as at tools.eidox.io/sap-bin-parser/
+      - name: Run under a path prefix, as at tools.eidox.io/sap-bin-parser/, converting on the server
         env:
           BASE_PATH: /sap-bin-parser
+          CONVERT: server
         run: node rust/web/tests/e2e.mjs target/release/sap-bin target/e2e-prefixed
       - name: Keep screenshots
         if: always()

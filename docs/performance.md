@@ -32,6 +32,15 @@ output.
 
 Run `sap-bin bench` to measure your own machine.
 
+## In the browser
+
+The page converts in the browser where it can, with the engine compiled to WebAssembly, in
+one thread. In Chromium, 1.6 million records convert at about 635,000 records a second to
+CSV and 780,000 to Parquet, byte-identical to the native engine. There is no upload and no
+download, so the network plays no part. The table viewer takes longer: for 1.6 million
+records the Arrow is ready in 2.3 s, and Perspective then needs about 5 to 12 seconds to
+build its table.
+
 ## Over the internet
 
 A conversion over the network is limited by the network, not by the engine. The CSV

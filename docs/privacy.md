@@ -5,7 +5,22 @@ English · [Русский](ru/privacy.md)
 # Nothing is stored
 
 The web service is built so that storing your data is not something it can do by
-accident.
+accident. In a current browser, your data does not even reach it.
+
+## Converted in your browser
+
+Where the browser allows it, the page converts the export itself, with the same engine
+compiled to WebAssembly, and nothing is uploaded. The result is written to the browser's
+private storage for this site (which no other site can read), handed to your downloads,
+and removed from that storage on your next conversion or visit. Afterwards the page tells
+the service the totals, for its [usage statistics](#usage-statistics): the number of
+records and shards, the format, whether one file or several, the SAP table name and the
+time taken. Never the file, a field name or a value. The browser suite checks, in a real
+browser, that no request carries an export to the server when the page converts itself.
+
+## Converted on the server
+
+Browsers that cannot do this, and anyone who adds `?convert=server`, get the server path:
 
 - An upload is read as a stream and converted as it arrives; the result streams straight
   back as a download. The page uploads in 8 MB chunks, each accepted only once the
@@ -16,9 +31,17 @@ accident.
 - To show progress, the server keeps a few counters under a random id your browser chose,
   and drops them five minutes after the conversion ends. An upload that goes quiet for ten
   minutes is cancelled.
+- A failed conversion aborts the download, so a truncated file never looks complete.
+
+## Either way
+
 - The page loads nothing from any other site, and its Content-Security-Policy forbids it
   from contacting one. Cross-site requests are refused.
-- A failed conversion aborts the download, so a truncated file never looks complete.
+- The table viewer ([Perspective](https://perspective-dev.github.io)) is served from the
+  same place. It loads parts of itself from `blob:` URLs, which the page's policy forbids,
+  so it runs in a frame of its own with a policy that allows them. That frame, too, can
+  reach nothing but this site, so Perspective's optional AI assistant and map tiles cannot
+  contact anyone. The page, which holds your files, keeps the strict policy.
 
 ## Usage statistics
 
@@ -29,6 +52,9 @@ The service keeps running totals for its operator:
   from the page or the API, and the SAP table name;
 - the same totals per day, for the last 90 days, plus page loads;
 - the fastest and the largest conversion.
+
+Conversions done in the browser are counted from the totals the page reports, under the
+client `browser`, and are checked for sense.
 
 That is all. No IP address, user agent, file name, field name or value is in it, and
 nothing ties a number to a person. A table name is counted only if it looks like one

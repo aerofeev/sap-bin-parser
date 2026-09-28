@@ -49,7 +49,7 @@ sap-bin bench                                 # замерить скорост�
 
 | Флаг | |
 |---|---|
-| `-f`, `--format` | `csv` (по умолчанию), `tsv`, `jsonl` или `parquet` |
+| `-f`, `--format` | `csv` (по умолчанию), `tsv`, `jsonl`, `parquet` или `arrow` (поток Arrow IPC для pandas, Polars или DuckDB) |
 | `-o`, `--output` | файл, `-` для stdout или папка при `--split` |
 | `--schema DATA.0.TXT` | использовать эту схему вместо схемы выгрузки (подходит и `DATA.0.zip`) |
 | `--split` | отдельный выходной файл на каждый шард |

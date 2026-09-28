@@ -23,8 +23,35 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  web:
+    # The page's optional parts, built once and embedded in every app: the
+    # engine as WebAssembly and the Perspective table viewer.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Perspective
+        working-directory: rust/web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run perspective
+      - name: The engine for the browser
+        run: scripts/build-wasm.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-parts
+          path: |
+            rust/web/wasm
+            rust/web/perspective
+
   binaries:
     name: ${{ matrix.asset }}
+    needs: web
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -52,6 +79,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-parts
+          path: rust/web
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Check it runs

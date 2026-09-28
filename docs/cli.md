@@ -47,7 +47,7 @@ sap-bin bench                                 # measure this machine
 
 | Flag | |
 |---|---|
-| `-f`, `--format` | `csv` (default), `tsv`, `jsonl` or `parquet` |
+| `-f`, `--format` | `csv` (default), `tsv`, `jsonl`, `parquet` or `arrow` (an Arrow IPC stream, for pandas, Polars or DuckDB) |
 | `-o`, `--output` | a file, `-` for stdout, or a directory with `--split` |
 | `--schema DATA.0.TXT` | use this schema instead of the export's own (a `DATA.0.zip` works too) |
 | `--split` | one output file per shard |

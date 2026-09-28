@@ -6,23 +6,40 @@
 #   scripts/build-wasm.sh
 #
 # Needs the wasm32-unknown-unknown target (rustup target add
-# wasm32-unknown-unknown), clang for the zstd library Parquet uses, and
-# wasm-bindgen-cli at the version in Cargo.lock. wasm-opt from binaryen, if
-# installed, makes the module smaller and faster.
+# wasm32-unknown-unknown) and clang, for the zstd library Parquet uses.
+# wasm-bindgen must match the version in Cargo.lock; when it is not on the
+# PATH, its release binary is fetched into target/tools/. wasm-opt from
+# binaryen, if installed, makes the module smaller and faster.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT=rust/web/wasm
 
-cargo build --release --locked -p sap-bin-wasm --target wasm32-unknown-unknown
 want=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print }' Cargo.lock)
-have=$(wasm-bindgen --version 2>/dev/null | awk '{ print $2 }' || true)
-if [[ "$have" != "$want" ]]; then
-  echo "wasm-bindgen $want is needed (found: ${have:-none}):" >&2
-  echo "  cargo install wasm-bindgen-cli --version $want --locked" >&2
-  exit 1
+bindgen=wasm-bindgen
+if [[ "$(wasm-bindgen --version 2>/dev/null | awk '{ print $2 }')" != "$want" ]]; then
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) target=x86_64-unknown-linux-musl ;;
+    Linux-aarch64 | Linux-arm64) target=aarch64-unknown-linux-gnu ;;
+    Darwin-x86_64) target=x86_64-apple-darwin ;;
+    Darwin-arm64) target=aarch64-apple-darwin ;;
+    *)
+      echo "wasm-bindgen $want is needed: cargo install wasm-bindgen-cli --version $want --locked" >&2
+      exit 1
+      ;;
+  esac
+  dir=target/tools/wasm-bindgen-$want-$target
+  if [[ ! -x "$dir/wasm-bindgen" ]]; then
+    echo "Fetching wasm-bindgen $want for $target"
+    mkdir -p target/tools
+    curl -fsSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$want/wasm-bindgen-$want-$target.tar.gz" |
+      tar -xz -C target/tools
+  fi
+  bindgen=$dir/wasm-bindgen
 fi
+
+cargo build --release --locked -p sap-bin-wasm --target wasm32-unknown-unknown
 rm -rf "$OUT"
-wasm-bindgen --target web --no-typescript --out-dir "$OUT" \
+"$bindgen" --target web --no-typescript --out-dir "$OUT" \
   target/wasm32-unknown-unknown/release/sap_bin_wasm.wasm
 if command -v wasm-opt >/dev/null; then
   wasm-opt -O3 --enable-bulk-memory --enable-nontrapping-float-to-int \

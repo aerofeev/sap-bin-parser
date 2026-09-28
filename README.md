@@ -21,9 +21,11 @@ This reads them.
 ## Three ways to use it
 
 **On the web.** Open **[tools.eidox.io/sap-bin-parser](https://tools.eidox.io/sap-bin-parser/)**,
-drop the export, look at the first records, convert. It takes the delivered `.zip`, the
-unzipped folder, or separate `.BIN` files, and has a schema editor for files that came
-without one. [More about the page](https://github.com/aerofeev/sap-bin-parser/blob/main/docs/web.md)
+drop the export, look at the first records, convert. In a current browser the conversion
+runs in the page itself, so the file is never uploaded, and *Explore records* opens it in
+a [Perspective](https://perspective-dev.github.io) table viewer to sort, filter, pivot and
+chart. It takes the delivered `.zip`, the unzipped folder, or separate `.BIN` files, and
+has a schema editor for files that came without one. [More about the page](https://github.com/aerofeev/sap-bin-parser/blob/main/docs/web.md)
 
 **Download the app** for [Windows](https://github.com/aerofeev/sap-bin-parser/releases/latest/download/sap-bin-windows-x64.zip),
 [macOS (Apple silicon)](https://github.com/aerofeev/sap-bin-parser/releases/latest/download/sap-bin-macos-arm64.tar.gz),

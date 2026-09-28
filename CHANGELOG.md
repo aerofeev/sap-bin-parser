@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Conversion in the browser.** Where the browser allows it, the page converts the export
+  itself, with the same engine compiled to WebAssembly in a worker, and uploads nothing.
+  The output goes to the browser's private storage and then to your downloads, so memory
+  stays flat. Over a network this is many times faster than uploading (about 635,000
+  records a second in Chromium), and a flaky connection cannot interrupt it. The page
+  falls back to the server where it cannot, and `?convert=server` chooses the server.
+- **Explore records** in a [Perspective](https://perspective-dev.github.io) table viewer:
+  sort, filter, group, pivot and chart up to millions of records in the page. It is served
+  from the binary and runs in a frame of its own.
+- **Arrow IPC output** (`-f arrow`, `format=arrow`), for pandas, Polars and DuckDB.
+- The engine builds without the server (`default-features = false`), and converts in one
+  thread on request (`Options::sequential`).
+- `POST api/usage`: the page reports the totals of a browser conversion, so the usage
+  statistics count it, under the client `browser`.
+
 ## 0.2.0
 
 A product rather than a script: the same parser as an app, a command line, a web

@@ -18,6 +18,7 @@ rules goes into both, with a case in `tests/test_cross_implementation.py`.
 | `src/sap_bin_parser/` | Python library and `sap-bin-py` CLI |
 | `rust/src/` | Rust engine, CLI, local app and web service |
 | `rust/web/` | The page and the usage dashboard: plain HTML and JavaScript, embedded in the binary, with no build step and no runtime dependencies. The stylesheet `app.css` is compiled from Tailwind CSS in `rust/web/styles/`; after changing the markup or the styles, run `npm install && npm run build:css` in `rust/web` and commit the result |
+| `rust/wasm/` | The engine's WebAssembly bindings, for converting in the browser. `scripts/build-wasm.sh` builds them into `rust/web/wasm/`, and `npm run perspective` in `rust/web` copies the Perspective viewer into `rust/web/perspective/`. The binary embeds both when they are there (`rust/build.rs`); without them the page converts on the server and has no viewer |
 | `tests/` | Python tests, including the cross-implementation suite |
 | `rust/web/tests/` | Browser end-to-end test (Playwright) |
 | `scripts/` | `compare.py` for real exports, `prove-stores-nothing.sh` |
@@ -33,6 +34,9 @@ cargo test
 cargo build --release && pytest               # includes Rust-vs-Python parity
 scripts/prove-stores-nothing.sh               # Linux, needs strace
 cd rust/web && npm install && npm run build:css  # after changing the page's markup or styles
+scripts/build-wasm.sh                            # the engine for the browser (needs clang)
+cd rust/web && npm run perspective               # the table viewer
+cargo clippy -p sap-bin-wasm --target wasm32-unknown-unknown -- -D warnings
 cd rust/web/tests && npm install && npm test  # the page in Chromium
 ```
 
