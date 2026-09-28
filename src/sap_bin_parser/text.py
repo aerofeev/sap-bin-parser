@@ -15,15 +15,13 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import IO, Any
 
-from .decode import DecodeError
+from .decode import STRIP_CHARS, DecodeError, normalise_date, normalise_time
 from .schema import Schema
 
 __all__ = ["TextReader"]
 
 # Text shards observed so far are windows-1251; the exporter does not mark it.
 DEFAULT_ENCODING = "windows-1251"
-
-_NULL_DATES = frozenset({"00000000", ""})
 
 
 class TextReader:
@@ -72,7 +70,7 @@ class TextReader:
                     header = next(reader)
                 except StopIteration:
                     return
-                header = [cell.strip() for cell in header if cell.strip()]
+                header = [cell.strip(STRIP_CHARS) for cell in header if cell.strip(STRIP_CHARS)]
                 if header and self.strict and header != names:
                     missing = set(names) - set(header)
                     if missing:
@@ -83,7 +81,7 @@ class TextReader:
                     names = header
 
             for row in reader:
-                if not any(cell.strip() for cell in row):
+                if not any(cell.strip(STRIP_CHARS) for cell in row):
                     continue
                 yield self._decode_row(names, row)
         finally:
@@ -91,22 +89,22 @@ class TextReader:
                 handle.close()
 
     def _decode_row(self, names: list[str], row: list[str]) -> dict[str, Any]:
-        by_name = dict(zip(names, (cell.strip() for cell in row), strict=False))
+        by_name = dict(zip(names, (cell.strip(STRIP_CHARS) for cell in row), strict=False))
         result: dict[str, Any] = {}
         for field in self.schema:
             raw = by_name.get(field.name, "")
             if field.type == "P":
                 result[field.name] = self._decimal(raw, field.decimals, field.name)
             elif field.type == "D":
-                result[field.name] = self._date(raw)
+                result[field.name] = normalise_date(raw)
             elif field.type == "T":
-                result[field.name] = self._time(raw)
+                result[field.name] = normalise_time(raw)
             else:
                 result[field.name] = raw
         return result
 
     def _decimal(self, raw: str, decimals: int, name: str) -> Any:
-        text = raw.strip().replace(" ", "")
+        text = raw.strip(STRIP_CHARS).replace(" ", "")
         if not text:
             value = Decimal(0)
         else:
@@ -119,24 +117,9 @@ class TextReader:
                 if self.strict:
                     raise DecodeError(f"field {name}: {raw!r} is not a number") from exc
                 return None
-        if decimals:
-            value = value.quantize(Decimal(1).scaleb(-decimals))
+        # Always quantize to the field's scale (rounding half to even), so a
+        # value never carries more places than its column can hold.
+        value = value.quantize(Decimal(1).scaleb(-decimals))
+        if not value:
+            value = value.copy_abs()  # "-0.00" is zero
         return float(value) if self.decimal_as_float else value
-
-    @staticmethod
-    def _date(raw: str) -> str | None:
-        text = raw.strip()
-        if text in _NULL_DATES or not text.strip("0"):
-            return None
-        if len(text) == 8 and text.isdigit():
-            return f"{text[0:4]}-{text[4:6]}-{text[6:8]}"
-        return text
-
-    @staticmethod
-    def _time(raw: str) -> str | None:
-        text = raw.strip()
-        if not text:
-            return None
-        if len(text) == 6 and text.isdigit():
-            return f"{text[0:2]}:{text[2:4]}:{text[4:6]}"
-        return text

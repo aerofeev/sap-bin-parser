@@ -125,14 +125,13 @@ def decode_text(raw: bytes, *, errors: str = "strict") -> str:
     return text.strip(STRIP_CHARS)
 
 
-def decode_date(raw: bytes, *, errors: str = "strict") -> str | None:
-    """Decode a ``D`` field (``YYYYMMDD``) to an ISO date, or ``None`` if null.
+def normalise_date(text: str) -> str | None:
+    """Normalise already-decoded ``D`` text, shared by both delivery formats.
 
     Blank, all zeros (of any length) and ``0000-00-00`` are null. Eight ASCII
     digits become ``YYYY-MM-DD``. Anything else is passed through unchanged,
     so an odd value is surfaced rather than silently dropped.
     """
-    text = decode_text(raw, errors=errors)
     if not text or text in _NULL_DATES or not text.strip("0"):
         return None
     if len(text) == 8 and _is_ascii_digits(text):
@@ -140,15 +139,24 @@ def decode_date(raw: bytes, *, errors: str = "strict") -> str | None:
     return text
 
 
-def decode_time(raw: bytes, *, errors: str = "strict") -> str | None:
-    """Decode a ``T`` field (``HHMMSS``) to an ISO time, or ``None`` if blank.
+def normalise_time(text: str) -> str | None:
+    """Normalise already-decoded ``T`` text.
 
     Unlike dates, ``000000`` is a real time (midnight), so only a blank field
     is null.
     """
-    text = decode_text(raw, errors=errors)
     if not text:
         return None
     if len(text) == 6 and _is_ascii_digits(text):
         return f"{text[0:2]}:{text[2:4]}:{text[4:6]}"
     return text
+
+
+def decode_date(raw: bytes, *, errors: str = "strict") -> str | None:
+    """Decode a ``D`` field (``YYYYMMDD``) to an ISO date, or ``None`` if null."""
+    return normalise_date(decode_text(raw, errors=errors))
+
+
+def decode_time(raw: bytes, *, errors: str = "strict") -> str | None:
+    """Decode a ``T`` field (``HHMMSS``) to an ISO time, or ``None`` if blank."""
+    return normalise_time(decode_text(raw, errors=errors))

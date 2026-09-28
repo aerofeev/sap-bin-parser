@@ -96,8 +96,9 @@ def encode_record(schema: Schema, values: dict[str, object]) -> bytes:
         if field.type == "P":
             parts.append(pack_decimal(Decimal(str(value or 0)), field.size, field.decimals))
         else:
-            text = str(value).ljust(field.length)[: field.length]
-            parts.append(text.encode("utf-16-be"))
+            # Pad in UTF-16 code units, not characters: an emoji takes two.
+            encoded = str(value).encode("utf-16-be")[: field.length * 2]
+            parts.append(encoded + " ".encode("utf-16-be") * (field.length - len(encoded) // 2))
     record = b"".join(parts)
     # Pad to the even boundary, as observed in real files.
     if len(record) % 2:
