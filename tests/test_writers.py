@@ -113,9 +113,7 @@ class TestParquet:
         source.write_bytes(encode_file(bsis_schema, [BSIS_ROWS[0]] * count))
 
         out = tmp_path / "big.parquet"
-        stats = write_parquet(
-            BinReader(source, bsis_schema), out, bsis_schema, batch_size=1000
-        )
+        stats = write_parquet(BinReader(source, bsis_schema), out, bsis_schema, batch_size=1000)
         assert stats.rows == count
         assert pq.read_table(out).num_rows == count
 

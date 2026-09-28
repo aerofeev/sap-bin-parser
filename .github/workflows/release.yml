@@ -1,0 +1,129 @@
+name: Release
+
+# Push a tag like v0.2.0 to publish:
+#   - the GitHub release: apps for Windows, macOS and Linux, the Python wheel,
+#     and sap-bin.pyz, a single-file Python script needing nothing installed;
+#   - the Python package on PyPI (once a trusted publisher is set up there).
+# The container image is published by docker.yml on the same tag.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  binaries:
+    name: ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: sap-bin-windows-x64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset: sap-bin-macos-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            asset: sap-bin-macos-x64
+          # Built on the oldest supported Ubuntu, so the glibc it links
+          # against is available on any current distribution.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: sap-bin-linux-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          dir=${{ matrix.asset }}
+          mkdir "$dir"
+          exe=sap-bin; [[ "${{ matrix.target }}" == *windows* ]] && exe=sap-bin.exe
+          cp "target/${{ matrix.target }}/release/$exe" "$dir/"
+          cp LICENSE "$dir/"
+          cat > "$dir/README.txt" <<'EOF'
+          sap-bin: SAP binary exports to CSV, Parquet or JSON Lines.
+
+          Double-click sap-bin (sap-bin.exe on Windows) to open the app in your
+          browser. It runs on this computer only; your files never leave it.
+
+          It is also a command-line tool:  sap-bin --help
+
+          macOS: the first time, right-click sap-bin and choose Open.
+          Windows: if SmartScreen warns, choose More info, then Run anyway.
+
+          https://github.com/aerofeev/sap-bin-parser
+          EOF
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            7z a "$dir.zip" "$dir" >/dev/null
+          else
+            tar czf "$dir.tar.gz" "$dir"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: sap-bin-*.*z*
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Wheel, sdist and a single-file script
+        run: |
+          python -m pip install --upgrade build
+          python -m build --outdir dist
+          # A zipapp of the library: `python sap-bin.pyz convert ...` works
+          # with a plain Python 3.10+ and nothing installed (Parquet also
+          # needs `pip install pyarrow`).
+          python -m zipapp src -m "sap_bin_parser.cli:main" -p "/usr/bin/env python3" -o dist/sap-bin.pyz
+          python dist/sap-bin.pyz --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python
+          path: dist/*
+
+  github-release:
+    needs: [binaries, python]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  pypi:
+    needs: python
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # trusted publishing: no API token is stored anywhere
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python
+          path: dist
+      - run: rm dist/sap-bin.pyz # PyPI takes wheels and sdists only
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,4 +1,8 @@
-"""Command line interface: ``sap-bin``."""
+"""Command line interface: ``sap-bin-py``.
+
+The Rust ``sap-bin`` binary has the same commands and flags, and is much faster;
+this one is the reference implementation and needs nothing but Python.
+"""
 
 from __future__ import annotations
 
@@ -155,9 +159,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
             archive.close()
 
 
-def _iter_rows(
-    reader: BinReader, *, limit: int | None, on_error: str
-) -> Iterator[dict[str, Any]]:
+def _iter_rows(reader: BinReader, *, limit: int | None, on_error: str) -> Iterator[dict[str, Any]]:
     """Yield rows, honouring ``--limit`` and ``--on-error``."""
     skipped = 0
     try:
@@ -275,8 +277,9 @@ def cmd_head(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="sap-bin",
+        prog="sap-bin-py",
         description="Parse SAP fixed-width binary table exports into CSV or Parquet.",
+        epilog="Made by eidox ai.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)

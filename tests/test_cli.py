@@ -83,8 +83,16 @@ class TestConvert:
     ):
         out = tmp_path / "bsis.csv"
         code = main(
-            ["convert", str(bsis_bin), "--schema", str(sidecar),
-             "-o", str(out), "--record-size", "128"]
+            [
+                "convert",
+                str(bsis_bin),
+                "--schema",
+                str(sidecar),
+                "-o",
+                str(out),
+                "--record-size",
+                "128",
+            ]
         )
         assert code == 1
         assert "probe" in capsys.readouterr().err

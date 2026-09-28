@@ -46,6 +46,20 @@ class TestPackedDecimal:
         # which is not a valid COMP-3 sign, so this must be special-cased.
         assert unpack_packed_decimal(b"\x00" * 7, 2) == Decimal("0")
 
+    def test_null_carries_the_field_scale(self):
+        # A null and a genuine zero must print identically ("0.00", not "0").
+        assert format(unpack_packed_decimal(b"\x00" * 7, 2), "f") == "0.00"
+        assert format(unpack_packed_decimal(bytes.fromhex("0000000000000C"), 2), "f") == "0.00"
+        assert format(unpack_packed_decimal(b"\x00" * 3, 0), "f") == "0"
+
+    def test_negative_zero_is_zero(self):
+        assert format(unpack_packed_decimal(bytes.fromhex("000D"), 2), "f") == "0.00"
+
+    def test_wide_field_keeps_every_digit(self):
+        # A 16-byte field holds 31 digits, beyond int64 and float64.
+        raw = bytes.fromhex("1234567890123456789012345678901" + "C")
+        assert unpack_packed_decimal(raw, 4) == Decimal("123456789012345678901234567.8901")
+
     def test_rejects_invalid_sign_nibble(self):
         with pytest.raises(DecodeError, match="sign nibble"):
             unpack_packed_decimal(bytes.fromhex("1231"), 0)
@@ -64,9 +78,7 @@ class TestPackedDecimal:
         raw = pack_decimal(Decimal("0.07"), 7, 2)
         assert unpack_packed_decimal(raw, 2) == Decimal("0.07")
 
-    @pytest.mark.parametrize(
-        "value", ["0", "1", "-1", "0.50", "-1234.56", "99999.99", "-0.01"]
-    )
+    @pytest.mark.parametrize("value", ["0", "1", "-1", "0.50", "-1234.56", "99999.99", "-0.01"])
     def test_round_trips(self, value):
         raw = pack_decimal(Decimal(value), 7, 2)
         assert unpack_packed_decimal(raw, 2) == Decimal(value)
@@ -91,6 +103,19 @@ class TestText:
         with pytest.raises(DecodeError, match="UTF-16BE"):
             decode_text(b"\x00")
 
+    def test_strips_only_the_documented_padding_set(self):
+        # Trailing NULs and ASCII whitespace go; a non-breaking space is data.
+        assert decode_text("AB \x00\t".encode("utf-16-be")) == "AB"
+        assert decode_text(" AB ".encode("utf-16-be")) == " AB "
+        assert decode_text("A\x00B".encode("utf-16-be")) == "A\x00B"
+
+    def test_lone_surrogate_is_an_error(self):
+        with pytest.raises(DecodeError):
+            decode_text(b"\xd8\x00\x00A")
+
+    def test_astral_characters_survive(self):
+        assert decode_text("a\U0001f600".encode("utf-16-be")) == "a\U0001f600"
+
 
 class TestDateTime:
     def test_formats_date_as_iso(self):
@@ -109,3 +134,12 @@ class TestDateTime:
     def test_unexpected_shape_passes_through(self):
         # Better to surface an odd value than to silently drop it.
         assert decode_date("2025-06".encode("utf-16-be")) == "2025-06"
+
+    def test_midnight_is_a_time_but_all_zero_date_is_null(self):
+        # The asymmetry is deliberate: 000000 is a valid time of day.
+        assert decode_time("000000".encode("utf-16-be")) == "00:00:00"
+        assert decode_date("0000".encode("utf-16-be")) is None
+
+    def test_only_ascii_digits_are_formatted(self):
+        # Arabic-Indic digits satisfy str.isdigit(); they must pass through.
+        assert decode_date("٢٠٢٥٠٦١٦".encode("utf-16-be")) == ("٢٠٢٥٠٦١٦")

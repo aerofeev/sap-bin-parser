@@ -1,0 +1,12 @@
+{
+  "name": "sap-bin-web-tests",
+  "private": true,
+  "description": "Browser end-to-end test for the sap-bin page. Not part of the page: the page has no dependencies.",
+  "type": "module",
+  "scripts": {
+    "test": "node e2e.mjs ../../../target/release/sap-bin ../../../target/e2e"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}

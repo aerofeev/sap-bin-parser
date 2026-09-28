@@ -1,0 +1,51 @@
+[package]
+name = "sap-bin"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.86"
+authors = ["Alexander Erofeev", "eidox ai"]
+description = "Convert SAP fixed-width binary table exports (.BIN) to CSV, JSON Lines or Parquet: CLI, local app and store-nothing web service"
+license = "MIT"
+repository = "https://github.com/aerofeev/sap-bin-parser"
+keywords = ["sap", "packed-decimal", "comp-3", "parquet", "etl"]
+categories = ["command-line-utilities", "encoding", "parsing"]
+default-run = "sap-bin"
+
+[lib]
+name = "sap_bin"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sap-bin"
+path = "src/main.rs"
+
+[dependencies]
+arrow-array = "59.3.0"
+arrow-buffer = "59.3.0"
+arrow-schema = "59.3.0"
+axum = "0.8.9"
+bytes = "1.12.1"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+crc32fast = "1.5.2"
+crossbeam-channel = "0.5.17"
+encoding_rs = "0.8.35"
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
+futures-util = "0.3.34"
+multer = "3.1.0"
+parquet = { version = "59.3.0", default-features = false, features = ["arrow", "zstd", "snap", "flate2", "flate2-zlib-rs"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.21"
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-stream = "0.1.19"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+webbrowser = "1.2.4"
+
+# musl's allocator is slow under threads; static Linux builds use mimalloc.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tower = { version = "0.5.3", features = ["util"] }

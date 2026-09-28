@@ -113,9 +113,7 @@ class TestArchiveFormatDetection:
 
         with zipfile.ZipFile(path, "w") as outer:
             outer.writestr("BSIS.QUERY/DATA.0.zip", nested("DATA.0.TXT", BSIS_SIDECAR.encode()))
-            outer.writestr(
-                "BSIS.QUERY/DATA.1.zip", nested(f"DATA.1.{suffix}", payload)
-            )
+            outer.writestr("BSIS.QUERY/DATA.1.zip", nested(f"DATA.1.{suffix}", payload))
         return path
 
     def test_text_shards_are_data_not_schema(self, tmp_path: Path):

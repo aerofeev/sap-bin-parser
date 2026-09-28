@@ -31,7 +31,7 @@ from .schema import Field, Schema, SchemaError, load_schema, parse_schema, schem
 from .text import TextReader
 from .writers import ConversionStats, write_csv, write_parquet
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "ArchiveError",
