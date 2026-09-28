@@ -2,11 +2,12 @@
 // what you read here is exactly what runs.
 //
 // Flow: choose an export (a .zip, an unzipped folder, or separate files) ->
-// send the first 4 MiB and last 256 KiB of its first file to /api/inspect
+// send the first 4 MiB and last 256 KiB of its first file to api/inspect
 // for an instant description and preview -> optionally edit the schema ->
 // convert by submitting the files in a form to a hidden frame, so the
 // browser's own download manager streams the result to disk (any size, any
-// browser) -> poll /api/jobs/{id} for progress.
+// browser) -> poll api/jobs/{id} for progress. Every URL is relative, so the
+// page works at a domain root or under a path such as /sap-bin-parser/.
 "use strict";
 
 (() => {
@@ -94,7 +95,7 @@
 
   async function loadConfig() {
     try {
-      const response = await fetch("/api/config", { cache: "no-store" });
+      const response = await fetch("api/config", { cache: "no-store" });
       state.config = await response.json();
     } catch {
       return;
@@ -172,7 +173,7 @@
     button.disabled = true;
     button.textContent = "Making a sample…";
     try {
-      const response = await fetch("/api/sample?records=20000&shards=3");
+      const response = await fetch("api/sample?records=20000&shards=3");
       const blob = await response.blob();
       state.schema = null;
       state.schemaEdited = false;
@@ -245,7 +246,7 @@
 
     let report;
     try {
-      const response = await fetch("/api/inspect", { method: "POST", body: form });
+      const response = await fetch("api/inspect", { method: "POST", body: form });
       report = await response.json();
       if (!response.ok) throw new Error(report.error || `The server answered ${response.status}.`);
     } catch (error) {
@@ -634,7 +635,7 @@
     if (opts.limit) cli.push("--limit", opts.limit);
     if (opts.format === "parquet" && opts.compression !== "zstd") cli.push("--compression", opts.compression);
 
-    const url = `${location.origin}/api/convert?${query(opts)}`;
+    const url = new URL(`api/convert?${query(opts)}`, document.baseURI).href;
     let curl;
     if (multi() || schemaName) {
       const parts = [];
@@ -688,40 +689,76 @@
 
   // ---------- converting ----------
 
-  function fileInput(name, files) {
-    const input = el("input", { type: "file", name, multiple: files.length > 1 });
-    const transfer = new DataTransfer();
-    for (const file of files) transfer.items.add(file);
-    input.files = transfer.files;
-    return input;
+  /** Read an error from a JSON problem response. */
+  async function problemText(response) {
+    try {
+      const body = await response.json();
+      return { error: body.error || `The server answered ${response.status}.`, hint: body.hint };
+    } catch {
+      return { error: `The server answered ${response.status}.` };
+    }
   }
 
-  function startConversion() {
+  // A conversion is three kinds of request, so that neither the browser nor a
+  // proxy has to send and receive on one request at the same time (most do
+  // not, and a large conversion would stall):
+  //   1. POST api/jobs                creates it; the body is the schema, if any
+  //   2. GET  api/jobs/{id}/download  in a hidden frame: the browser's download
+  //                                   manager streams the result to disk
+  //   3. POST api/jobs/{id}/input     the files, 8 MiB at a time, in order; each
+  //                                   is answered once the converter has taken it
+  async function startConversion() {
     if (!dataFile() || state.job) return;
     const opts = options();
     const id = randomId();
-    const form = el("form", {
-      method: "post",
-      enctype: "multipart/form-data",
-      action: `/api/convert?${query(opts, id)}`,
-      target: "sink",
-      hidden: true,
-    });
-    // The schema goes first, so the server has it before any data arrives.
-    if (state.schema) form.append(fileInput("schema", [state.schema]));
-    form.append(fileInput("file", state.files));
-    document.body.append(form);
-    form.submit();
-    setTimeout(() => form.remove(), 5000);
-
     const size = state.files.reduce((n, f) => n + f.size, 0);
-    state.job = { id, started: Date.now(), size, name: outputName(opts), timer: null };
+    const job = { id, started: Date.now(), size, name: outputName(opts), timer: null, uploaded: 0 };
+    state.job = job;
     $("go").disabled = true;
     $("result").hidden = true;
     $("progress").hidden = false;
     $("meter-fill").style.width = "0";
     $("progress-text").textContent = "Starting…";
-    state.job.timer = setInterval(poll, 500);
+
+    let chunkBytes = 8 * 1024 * 1024;
+    try {
+      const created = await fetch(`api/jobs?${query(opts, id)}`, { method: "POST", body: state.schema || "" });
+      if (!created.ok) {
+        finish({ state: "failed", ...(await problemText(created)) });
+        return;
+      }
+      chunkBytes = (await created.json()).chunk_bytes || chunkBytes;
+    } catch (error) {
+      finish({ state: "failed", error: `Could not reach the server: ${error.message}` });
+      return;
+    }
+    $("sink").src = `api/jobs/${id}/download`;
+    job.timer = setInterval(poll, 500);
+
+    try {
+      for (const file of state.files) {
+        let first = true;
+        for (let at = 0; first || at < file.size; at += chunkBytes) {
+          if (state.job !== job) return; // cancelled
+          const params = new URLSearchParams();
+          if (first) {
+            params.set("start", "true");
+            params.set("name", baseName(file.name));
+          }
+          const piece = file.slice(at, at + chunkBytes);
+          const response = await fetch(`api/jobs/${id}/input?${params}`, { method: "POST", body: piece });
+          if (!response.ok) {
+            if (state.job === job) finish({ state: "failed", ...(await problemText(response)) });
+            return;
+          }
+          job.uploaded += piece.size;
+          first = false;
+        }
+      }
+      await fetch(`api/jobs/${id}/input?end=true`, { method: "POST" });
+    } catch (error) {
+      if (state.job === job) finish({ state: "failed", error: `The upload was interrupted: ${error.message}` });
+    }
   }
 
   async function poll() {
@@ -729,7 +766,7 @@
     if (!job) return;
     let status;
     try {
-      const response = await fetch(`/api/jobs/${job.id}`, { cache: "no-store" });
+      const response = await fetch(`api/jobs/${job.id}`, { cache: "no-store" });
       if (response.status === 404) {
         if (Date.now() - job.started > 20000) {
           finish({ state: "failed", error: "The server did not start the conversion. It may be busy: try again in a minute." });
@@ -741,6 +778,11 @@
       return;
     }
     if (status.state === "running") {
+      if (!status.download_connected && Date.now() - job.started > 15000) {
+        $("progress-text").textContent =
+          "Waiting for the download to start. If your browser asks whether to allow downloads from this site, allow it.";
+        return;
+      }
       const fraction = Math.min(1, status.bytes_in / Math.max(1, job.size));
       $("meter-fill").style.width = `${(fraction * 100).toFixed(1)}%`;
       const rate = status.elapsed > 0 ? status.records / status.elapsed : 0;
@@ -784,13 +826,13 @@
   async function cancel() {
     const job = state.job;
     if (!job) return;
-    try {
-      await fetch(`/api/jobs/${job.id}/cancel`, { method: "POST" });
-    } catch {
-      // The frame reset below stops the upload regardless.
-    }
+    finish({ state: "cancelled" }); // also stops the upload loop
     $("sink").src = "about:blank";
-    finish({ state: "cancelled" });
+    try {
+      await fetch(`api/jobs/${job.id}/cancel`, { method: "POST" });
+    } catch {
+      // Closing the download above stops the conversion regardless.
+    }
   }
 
   // ---------- wiring ----------

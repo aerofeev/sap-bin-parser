@@ -38,7 +38,8 @@ use sap_bin::{archive, server, Compression, DecimalMode, Error, Format, Schema};
         sap-bin convert BSIS.QUERY.zip -o bsis.parquet\n  \
         sap-bin convert BSIS.QUERY/ -o bsis.csv      an unzipped export folder\n  \
         sap-bin convert DATA.1.BIN DATA.2.BIN --schema DATA.0.TXT -o bsis.csv\n  \
-        cat BSIS.QUERY.zip | sap-bin convert - -o - > bsis.csv"
+        cat BSIS.QUERY.zip | sap-bin convert - -o - > bsis.csv\n\n\
+        Made by eidox ai · https://github.com/aerofeev/sap-bin-parser"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -115,6 +116,10 @@ struct ServeArgs {
     /// Worker threads per conversion (0: CPUs divided by concurrency).
     #[arg(long, default_value_t = 0, env = "SAPBIN_THREADS")]
     threads: usize,
+    /// Serve under a path prefix, e.g. /sap-bin-parser for
+    /// https://tools.example.com/sap-bin-parser/ behind a reverse proxy.
+    #[arg(long, default_value = "", env = "SAPBIN_BASE_PATH")]
+    base_path: String,
 }
 
 #[derive(Args)]
@@ -286,6 +291,7 @@ fn run_app(args: AppArgs) -> sap_bin::Result<i32> {
         max_concurrency: 64,
         threads: 0,
         open_browser: !args.no_open,
+        base_path: String::new(),
     };
     runtime()?.block_on(server::serve(config))?;
     Ok(0)
@@ -300,6 +306,7 @@ fn run_serve(args: ServeArgs) -> sap_bin::Result<i32> {
         max_concurrency: args.max_concurrency.max(1),
         threads: args.threads,
         open_browser: false,
+        base_path: server::normalise_base_path(&args.base_path).map_err(Error::Schema)?,
     };
     runtime()?.block_on(server::serve(config))?;
     Ok(0)

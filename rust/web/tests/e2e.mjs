@@ -1,6 +1,7 @@
 // End-to-end test of the web page in a real browser.
 //
 //   node rust/web/tests/e2e.mjs [path/to/sap-bin] [output-dir]
+//   BASE_PATH=/sap-bin-parser node rust/web/tests/e2e.mjs ...   (under a path prefix)
 //
 // Starts the server, drives the page with Playwright (Chromium), downloads
 // the converted files into output-dir, and fails on any console error,
@@ -14,9 +15,12 @@ const binary = resolve(process.argv[2] ?? "target/release/sap-bin");
 const outDir = resolve(process.argv[3] ?? "target/e2e");
 mkdirSync(outDir, { recursive: true });
 const port = 18000 + Math.floor(Math.random() * 2000);
-const base = `http://127.0.0.1:${port}`;
+const basePath = (process.env.BASE_PATH || "").replace(/\/+$/, "");
+const base = `http://127.0.0.1:${port}${basePath}`;
 
-const server = spawn(binary, ["serve", "--port", String(port)], { stdio: ["ignore", "ignore", "pipe"] });
+const serverArgs = ["serve", "--port", String(port)];
+if (basePath) serverArgs.push("--base-path", basePath);
+const server = spawn(binary, serverArgs, { stdio: ["ignore", "ignore", "pipe"] });
 let serverLog = "";
 server.stderr.on("data", (d) => { serverLog += d; });
 
@@ -44,7 +48,7 @@ try {
   page.on("console", (m) => { if (m.type() === "error") problems.push(m.text()); });
   page.on("pageerror", (e) => problems.push(String(e)));
 
-  await page.goto(base);
+  await page.goto(`${base}/`);
   check((await page.title()).startsWith("sap-bin"), "page loads");
   await page.waitForSelector("#mode-badge:not([hidden])");
   check((await page.textContent("#mode-badge")) === "Stores nothing", "hosted mode badge");
@@ -161,6 +165,31 @@ open(out + "/multi/DATA.0.TXT", "wb").write(zipfile.ZipFile(io.BytesIO(z.read("B
   await page.setInputFiles("#picker", [join(outDir, "multi", "DATA.1.BIN"), join(outDir, "multi", "DATA.0.TXT")]);
   await page.waitForSelector("#summary:not([hidden])");
 
+  // 3f. A large export: far more output than network buffers hold, so this
+  // stalls unless upload and download travel on separate requests.
+  writeFileSync(join(outDir, "big.zip"), Buffer.from(await (await fetch(`${base}/api/sample?records=200000&shards=1`)).arrayBuffer()));
+  execFileSync("python3", ["-c", `
+import zipfile, io, sys
+z = zipfile.ZipFile(sys.argv[1] + "/big.zip")
+data = zipfile.ZipFile(io.BytesIO(z.read("BSIS.QUERY/DATA.1.zip"))).read("DATA.1.BIN")
+open(sys.argv[1] + "/big.BIN", "wb").write(data * 5)
+`, outDir]);
+  await page.click("#reset");
+  await page.setInputFiles("#picker", [join(outDir, "big.BIN"), join(outDir, "multi", "DATA.0.TXT")]);
+  await page.waitForSelector("#summary:not([hidden])");
+  await page.check('input[name="format"][value="csv"]', { force: true });
+  const bigStarted = Date.now();
+  const [big] = await Promise.all([page.waitForEvent("download"), page.click("#go")]);
+  await big.saveAs(join(outDir, "big.csv"));
+  await page.waitForSelector("#result .alert.ok", { timeout: 120000 });
+  const bigLines = (await import("node:fs")).readFileSync(join(outDir, "big.csv"), "utf8").split("\r\n").length - 2;
+  check(bigLines === 1000000, `a 126 MB export converts in full through the page (${bigLines} records, ${((Date.now() - bigStarted) / 1000).toFixed(1)} s)`);
+  await page.click("#reset");
+  await page.setInputFiles("#picker", [join(outDir, "multi", "DATA.1.BIN"), join(outDir, "multi", "DATA.0.TXT")]);
+  await page.waitForSelector("#summary:not([hidden])");
+  (await import("node:fs")).rmSync(join(outDir, "big.BIN"));
+  (await import("node:fs")).rmSync(join(outDir, "big.csv"));
+
   // 4. A wrong record size: clear error, probe, one-click fix.
   await page.click("summary:has-text('More options')");
   await page.fill("#record-size", "127");
@@ -176,10 +205,11 @@ open(out + "/multi/DATA.0.TXT", "wb").write(zipfile.ZipFile(io.BytesIO(z.read("B
   const snippets = await page.textContent("#snippets");
   check(snippets.includes("sap-bin convert DATA.1.BIN") && snippets.includes("--schema DATA.0.TXT") && snippets.includes("--record-size 126"),
     "CLI snippet mirrors the options");
+  check(snippets.includes(`${base}/api/convert?`), "curl snippet points at this server, prefix included");
 
   // 6. Phone width: nothing scrolls sideways.
   await page.setViewportSize({ width: 375, height: 800 });
-  await page.goto(base);
+  await page.goto(`${base}/`);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   check(overflow <= 0, "no horizontal scroll at 375px");
   await page.screenshot({ path: join(outDir, "phone.png"), fullPage: true });
@@ -187,7 +217,7 @@ open(out + "/multi/DATA.0.TXT", "wb").write(zipfile.ZipFile(io.BytesIO(z.read("B
   // 7. Dark mode renders.
   const dark = await browser.newContext({ colorScheme: "dark", viewport: { width: 1200, height: 900 } });
   const darkPage = await dark.newPage();
-  await darkPage.goto(base);
+  await darkPage.goto(`${base}/`);
   await darkPage.click("#try-sample");
   await darkPage.waitForSelector("#summary:not([hidden])");
   await darkPage.screenshot({ path: join(outDir, "dark.png") });

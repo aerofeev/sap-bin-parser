@@ -3,6 +3,7 @@ name = "sap-bin"
 version = "0.2.0"
 edition = "2021"
 rust-version = "1.86"
+authors = ["Alexander Erofeev", "eidox ai"]
 description = "Convert SAP fixed-width binary table exports (.BIN) to CSV, JSON Lines or Parquet: CLI, local app and store-nothing web service"
 license = "MIT"
 repository = "https://github.com/aerofeev/sap-bin-parser"
@@ -47,3 +48,4 @@ mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+tower = { version = "0.5.3", features = ["util"] }

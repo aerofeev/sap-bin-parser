@@ -18,6 +18,13 @@ curl -fsS "localhost:$PORT/api/sample?records=50000&shards=3" -o "$WORK/sample.z
 curl -fsS --data-binary @"$WORK/sample.zip" "localhost:$PORT/api/convert?format=parquet" -o /dev/null
 curl -fsS -F file=@"$WORK/sample.zip" "localhost:$PORT/api/convert?format=csv&split=true" -o /dev/null
 curl -fsS -F head=@"$WORK/sample.zip" "localhost:$PORT/api/inspect" -o /dev/null
+# The page's protocol: create a job, stream the download, upload in chunks.
+JOB="proof$RANDOM$RANDOM"
+curl -fsS -X POST "localhost:$PORT/api/jobs?job=$JOB&format=parquet" -o /dev/null
+curl -fsS "localhost:$PORT/api/jobs/$JOB/download" -o /dev/null & DOWNLOAD=$!
+curl -fsS -X POST --data-binary @"$WORK/sample.zip" "localhost:$PORT/api/jobs/$JOB/input" -o /dev/null
+curl -fsS -X POST "localhost:$PORT/api/jobs/$JOB/input?end=true" -o /dev/null
+wait "$DOWNLOAD"
 # Stop the server itself (not strace), so it shuts down and strace exits.
 pkill -INT -f "^$BIN serve --port $PORT" || true
 wait "$PID" 2>/dev/null || true
@@ -26,4 +33,4 @@ if grep -E 'O_WRONLY|O_RDWR|O_CREAT|creat\(|mkdir|rename|unlink' "$WORK/trace" |
   echo "FAIL: the server touched the filesystem for writing (above)" >&2
   exit 1
 fi
-echo "ok: three conversions and an inspection, and the server wrote nothing to disk"
+echo "ok: four conversions and an inspection, and the server wrote nothing to disk"
