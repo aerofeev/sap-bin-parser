@@ -19,6 +19,16 @@ service and a library.
   Checked in CI by tracing the server's file system calls. Container image on GHCR.
 - **More ways in.** Unzipped export folders, separate `DATA.N.BIN` files, a zipped
   `DATA.0.zip` sidecar, and a schema typed or pasted into the page's editor.
+- Serves under a path prefix (`SAPBIN_BASE_PATH`), with deployment files for
+  `tools.eidox.io/sap-bin-parser`: compose, Caddy and nginx.
+- The page converts through a job: the download and 8 MiB upload chunks travel on
+  separate requests, so browsers and proxies that cannot send and receive on one request
+  at once no longer stall on large exports. This also keeps every request under
+  Cloudflare's upload cap.
+- Container images for amd64 and arm64 on `ghcr.io`, for every merge and release; a
+  `.gitlab-ci.yml` publishes to GitLab's registry from a mirror.
+- Each release carries `sap-bin.pyz`, the Python implementation as one file needing only
+  Python, and the Python wheel.
 - `inspect` from the first and last few megabytes of a file: table, geometry, shard
   count, a record estimate, the first rows, and a record-size probe when they do not line
   up.

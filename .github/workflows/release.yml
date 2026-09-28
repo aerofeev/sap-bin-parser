@@ -1,8 +1,10 @@
 name: Release
 
-# Push a tag like v0.2.0 to publish: downloadable apps for Windows, macOS
-# and Linux on the GitHub release, the Python package on PyPI, and the
-# container image on GitHub Container Registry.
+# Push a tag like v0.2.0 to publish:
+#   - the GitHub release: apps for Windows, macOS and Linux, the Python wheel,
+#     and sap-bin.pyz, a single-file Python script needing nothing installed;
+#   - the Python package on PyPI (once a trusted publisher is set up there).
+# The container image is published by docker.yml on the same tag.
 
 on:
   push:
@@ -74,8 +76,29 @@ jobs:
           name: ${{ matrix.asset }}
           path: sap-bin-*.*z*
 
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Wheel, sdist and a single-file script
+        run: |
+          python -m pip install --upgrade build
+          python -m build --outdir dist
+          # A zipapp of the library: `python sap-bin.pyz convert ...` works
+          # with a plain Python 3.10+ and nothing installed (Parquet also
+          # needs `pip install pyarrow`).
+          python -m zipapp src -m "sap_bin_parser.cli:main" -p "/usr/bin/env python3" -o dist/sap-bin.pyz
+          python dist/sap-bin.pyz --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python
+          path: dist/*
+
   github-release:
-    needs: binaries
+    needs: [binaries, python]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -92,43 +115,15 @@ jobs:
           generate_release_notes: true
 
   pypi:
+    needs: python
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write # trusted publishing: no API token is stored anywhere
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/download-artifact@v4
         with:
-          python-version: "3.12"
-      - run: |
-          python -m pip install --upgrade build
-          python -m build
+          name: python
+          path: dist
+      - run: rm dist/sap-bin.pyz # PyPI takes wheels and sdists only
       - uses: pypa/gh-action-pypi-publish@release/v1
-
-  image:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}

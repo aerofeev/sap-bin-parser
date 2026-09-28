@@ -228,3 +228,6 @@ textarea {
 }
 .tag { font-size: 0.75rem; font-weight: 650; padding: 1px 8px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); margin-left: 6px; vertical-align: middle; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.maker { color: inherit; text-decoration: none; }
+.maker:hover { color: var(--text); text-decoration: underline; }

@@ -59,7 +59,10 @@ anywhere, is the local app, which is the same page served from their own machine
    up, it says so in words, ranks the record sizes that do, and applies one with a click.
 3. **Convert.** Pick a format, press the button. The browser's own download manager
    saves the result, so a 20 GB CSV streams to disk in any browser with no memory limit,
-   and the page shows records per second and time remaining.
+   and the page shows records per second and time remaining. The upload goes in 8 MB
+   chunks on requests of their own, because browsers (and many proxies) will not read a
+   download while still sending an upload: one request carrying both stalls on any
+   export larger than the network's buffers.
 
 When there is no schema, or the sidecar is wrong, the page has an editor: type fields,
 paste them from SE11 or a spreadsheet, and save the result as a `DATA.0.TXT`. Every
@@ -92,8 +95,8 @@ the name: the word is heavily taken and tells a search engine nothing about SAP 
 ## Launch plan
 
 1. Tag `v0.2.0`: the release workflow publishes the apps, the PyPI package and the image.
-2. Put a public instance up (Fly.io configuration in `deploy/`), and its link at the top
-   of the README, with the screenshots.
+2. Put the public instance up at `tools.eidox.io/sap-bin-parser`
+   (`deploy/tools.eidox.io/`); the README already links to it.
 3. One long-form post: "What is inside a SAP binary export, and why record 2 is shifted by
    one byte". The format notes are the article; the app is the call to action.
    Cross-post to the SAP Community, r/SAP, r/dataengineering and Show HN.

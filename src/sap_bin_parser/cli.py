@@ -279,6 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sap-bin-py",
         description="Parse SAP fixed-width binary table exports into CSV or Parquet.",
+        epilog="Made by eidox ai.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)

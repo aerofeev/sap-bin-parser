@@ -1,0 +1,26 @@
+# sap-bin at https://tools.eidox.io/sap-bin-parser/
+#
+#   docker compose up -d            start
+#   docker compose pull && docker compose up -d    update to the newest release
+#
+# Listens on 127.0.0.1:8080 only; the reverse proxy (Caddyfile or nginx.conf
+# next to this file) is what faces the internet.
+services:
+  sap-bin:
+    image: ghcr.io/aerofeev/sap-bin-parser:latest
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      SAPBIN_BASE_PATH: /sap-bin-parser
+      SAPBIN_MAX_UPLOAD_MB: "20000"
+      SAPBIN_MAX_CONCURRENCY: "4"
+    read_only: true            # nothing is ever written
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits:
+          memory: 1g           # ~150 MB per conversion, whatever its size
+    healthcheck:
+      disable: true            # distroless: probe /sap-bin-parser/healthz from outside
+    restart: unless-stopped

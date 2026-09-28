@@ -277,7 +277,7 @@ pub fn parquet_properties(compression: Compression) -> WriterProperties {
     };
     WriterProperties::builder()
         .set_compression(codec)
-        .set_created_by(format!("sap-bin version {}", crate::VERSION))
+        .set_created_by(format!("sap-bin version {} (eidox ai)", crate::VERSION))
         .build()
 }
 

@@ -13,6 +13,11 @@ COPY rust ./rust
 RUN cargo build --release --locked -p sap-bin
 
 FROM gcr.io/distroless/cc-debian12:nonroot
+LABEL org.opencontainers.image.title="sap-bin" \
+      org.opencontainers.image.description="SAP binary exports to CSV, Parquet or JSON Lines. Stores nothing." \
+      org.opencontainers.image.vendor="eidox ai" \
+      org.opencontainers.image.source="https://github.com/aerofeev/sap-bin-parser" \
+      org.opencontainers.image.licenses="MIT"
 COPY --from=build /src/target/release/sap-bin /usr/local/bin/sap-bin
 USER nonroot:nonroot
 EXPOSE 8080

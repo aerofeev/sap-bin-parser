@@ -1,0 +1,17 @@
+# Caddy, if it serves tools.eidox.io. TLS certificates are automatic.
+tools.eidox.io {
+	redir /sap-bin-parser /sap-bin-parser/ 308
+
+	handle /sap-bin-parser/* {
+		reverse_proxy 127.0.0.1:8080 {
+			# Stream the download as it is produced.
+			flush_interval -1
+			transport http {
+				read_timeout 2h
+				write_timeout 2h
+			}
+		}
+	}
+
+	# ... other tools on the same domain ...
+}

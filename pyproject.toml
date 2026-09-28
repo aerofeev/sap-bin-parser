@@ -9,6 +9,8 @@ description = "Parse SAP fixed-width binary table exports (.BIN) into CSV or Par
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+authors = [{ name = "Alexander Erofeev" }]
+maintainers = [{ name = "eidox ai" }]
 keywords = ["sap", "packed-decimal", "comp-3", "fixed-width", "etl", "parquet"]
 classifiers = [
   "Development Status :: 4 - Beta",
