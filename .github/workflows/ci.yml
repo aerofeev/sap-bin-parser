@@ -5,33 +5,37 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  test:
+  python:
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
       - name: Install
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
-
       - name: Lint
-        run: ruff check src tests
-
+        run: |
+          ruff check src tests scripts
+          ruff format --check src tests scripts
       - name: Test
         run: pytest -q
 
-  test-without-pyarrow:
+  python-without-pyarrow:
     # CSV output must work with no dependencies at all.
     runs-on: ubuntu-latest
     steps:
@@ -46,3 +50,102 @@ jobs:
           pip install pytest
       - name: Test
         run: pytest -q
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --locked
+      - name: Smoke test the binary
+        shell: bash
+        run: |
+          cargo build --release --locked
+          target/release/sap-bin --version
+          target/release/sap-bin bench --records 200000
+
+  cross-implementation:
+    # The Python library and the Rust engine must produce identical output.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          cargo build --release --locked
+          pip install -e '.[dev]'
+      - name: Compare
+        env:
+          SAP_BIN_RUST: target/release/sap-bin
+        run: pytest -q tests/test_cross_implementation.py
+
+  browser:
+    # The web page, driven end to end in Chromium.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build
+        run: cargo build --release --locked
+      - name: Install Playwright
+        working-directory: rust/web/tests
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Check the page's JavaScript parses
+        run: node --check rust/web/app.js
+      - name: Run
+        run: node rust/web/tests/e2e.mjs target/release/sap-bin target/e2e
+      - name: Keep screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: target/e2e/*.png
+
+  stores-nothing:
+    # Prove the service never writes to disk: trace its file system calls.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get install -y strace
+      - run: cargo build --release --locked
+      - run: scripts/prove-stores-nothing.sh target/release/sap-bin
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t sap-bin:ci .
+      - name: Run it read-only and convert a sample
+        run: |
+          docker run -d --rm --read-only --cap-drop ALL -p 8080:8080 --name sap-bin sap-bin:ci
+          for i in $(seq 30); do curl -fsS localhost:8080/healthz && break; sleep 1; done
+          curl -fsS 'localhost:8080/api/sample?records=10000&shards=2' -o sample.zip
+          curl -fsS --data-binary @sample.zip 'localhost:8080/api/convert?format=csv' -o out.csv
+          test "$(wc -l < out.csv)" -eq 20001
+          docker stop sap-bin

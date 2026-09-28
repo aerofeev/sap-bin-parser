@@ -14,6 +14,10 @@ use std::time::{Duration, Instant};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use sap_bin::convert::{convert, Input, InputKind, OnError, Options, Output, Progress};
 use sap_bin::files::FileEntries;
 use sap_bin::inspect::{inspect, Sample};

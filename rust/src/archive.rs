@@ -111,7 +111,9 @@ pub fn schema_from_bytes(bytes: &[u8], name: Option<&str>) -> Result<crate::sche
 /// Read a whole entry, refusing more than `limit` bytes.
 pub fn read_bounded(reader: &mut (impl Read + ?Sized), limit: u64, what: &str) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    (&mut *reader).take(limit + 1).read_to_end(&mut out)?;
+    (&mut *reader)
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut out)?;
     if out.len() as u64 > limit {
         return Err(Error::Limit(format!(
             "{what} is larger than the {} MiB per-shard limit",

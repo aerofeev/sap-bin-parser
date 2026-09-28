@@ -1,4 +1,8 @@
-"""Command line interface: ``sap-bin``."""
+"""Command line interface: ``sap-bin-py``.
+
+The Rust ``sap-bin`` binary has the same commands and flags, and is much faster;
+this one is the reference implementation and needs nothing but Python.
+"""
 
 from __future__ import annotations
 
@@ -273,7 +277,7 @@ def cmd_head(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="sap-bin",
+        prog="sap-bin-py",
         description="Parse SAP fixed-width binary table exports into CSV or Parquet.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

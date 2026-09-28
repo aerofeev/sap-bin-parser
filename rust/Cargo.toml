@@ -41,5 +41,9 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 webbrowser = "1.2.4"
 
+# musl's allocator is slow under threads; static Linux builds use mimalloc.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
+
 [dev-dependencies]
 tempfile = "3.27.0"
