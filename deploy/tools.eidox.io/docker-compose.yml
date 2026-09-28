@@ -1,7 +1,7 @@
 # sap-bin at https://tools.eidox.io/sap-bin-parser/
 #
 #   docker compose up -d            start
-#   docker compose pull && docker compose up -d    update to the newest release
+#   docker compose pull && docker compose up -d    update to the newest merge to main
 #
 # Listens on 127.0.0.1:8080 only; the reverse proxy (Caddyfile or nginx.conf
 # next to this file) is what faces the internet.
@@ -15,7 +15,9 @@
 # "usage" volume; everything else stays read-only.
 services:
   sap-bin:
-    image: ghcr.io/aerofeev/sap-bin-parser:latest
+    # Follows main: every merge is live after a pull. To pin a release
+    # instead, use :latest or a version such as :0.2.0.
+    image: ghcr.io/aerofeev/sap-bin-parser:main
     ports:
       - "127.0.0.1:8080:8080"
     environment:

@@ -36,8 +36,10 @@ The totals are saved to the `usage` volume every minute and when the container s
 they survive updates. `docker compose down -v` deletes them.
 
 To update, `docker compose pull && docker compose up -d`. Images are published to
-`ghcr.io/aerofeev/sap-bin-parser` for amd64 and arm64: `:latest` and `:0.2.0` on each
-release, `:main` on each merge.
+`ghcr.io/aerofeev/sap-bin-parser` for amd64 and arm64: `:main` on each merge, `:latest`
+and the version (`:0.2.0`) on each release. This instance follows `:main`, so a merge is
+live after the next pull. To run releases only, change the image to `:latest` or a
+version.
 
 **Behind Cloudflare's proxy** the page works for exports of any size: it uploads in 8 MB
 chunks, well under Cloudflare's 100 MB per-request cap. That cap does apply to the
