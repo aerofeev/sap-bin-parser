@@ -41,3 +41,5 @@ node_modules/
 
 # The WebAssembly build of the engine (scripts/build-wasm.sh)
 rust/web/wasm/
+# The Perspective viewer, copied from node_modules (npm run perspective)
+rust/web/perspective/

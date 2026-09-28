@@ -15,6 +15,7 @@
 @source "../stats.html";
 @source "../app.js";
 @source "../stats.js";
+@source "../explorer.html";
 
 /*
  * The typeface and its settings are Frappe UI's: the same Inter variable
@@ -180,7 +181,7 @@
 @layer components {
   /* Layout */
   .shell { @apply mx-auto w-full max-w-6xl px-4 sm:px-6; }
-  .card { @apply mb-4 rounded-xl border bg-card p-5 text-card-foreground shadow-sm sm:p-6; }
+  .card { @apply mb-4 scroll-mt-20 rounded-xl border bg-card p-5 text-card-foreground shadow-sm sm:p-6; }
   .card h2 { @apply mb-4 text-lg; }
   .muted { @apply text-muted-foreground; }
   .small { @apply text-sm; }
@@ -323,6 +324,11 @@
   .editor .auto { @apply text-muted-foreground; }
   .editor-actions { @apply mt-2.5 flex flex-wrap items-center gap-2; }
   .paste-label { @apply mt-2.5 mb-1 block text-sm text-muted-foreground; }
+
+  /* The table viewer */
+  .explorer-host { @apply h-[70vh] min-h-[420px] overflow-hidden rounded-lg border bg-card empty:hidden; }
+  .explorer-host:fullscreen { @apply h-screen rounded-none border-0; }
+  .explorer-host iframe { @apply block size-full border-0; }
 
   /* How it works, run it yourself */
   .info { @apply my-10 grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-6; }

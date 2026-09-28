@@ -171,6 +171,8 @@ enum FormatArg {
     Tsv,
     Jsonl,
     Parquet,
+    /// Arrow IPC stream, for pandas, Polars or DuckDB.
+    Arrow,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -728,6 +730,7 @@ fn convert_options(args: &ConvertArgs) -> sap_bin::Result<Options> {
             FormatArg::Tsv => Format::Tsv,
             FormatArg::Jsonl => Format::Jsonl,
             FormatArg::Parquet => Format::Parquet,
+            FormatArg::Arrow => Format::Arrow,
         },
         delimiter,
         bom,

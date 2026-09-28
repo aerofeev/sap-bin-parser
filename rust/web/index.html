@@ -61,6 +61,7 @@
           <div id="file-meta" class="muted small"></div>
         </div>
         <div class="row-actions">
+          <button id="explore" class="button small" type="button" hidden>Explore records</button>
           <button id="edit-schema" class="button small" type="button" hidden>Edit schema</button>
           <button id="reset" class="button ghost small" type="button">Choose another</button>
         </div>
@@ -115,6 +116,31 @@
         <div id="panel-preview" role="tabpanel" aria-labelledby="tab-preview" class="table-wrap"></div>
         <div id="panel-fields" role="tabpanel" aria-labelledby="tab-fields" class="table-wrap" hidden></div>
       </div>
+    </section>
+
+    <section id="explorer" class="card" hidden aria-live="polite">
+      <div class="file-row">
+        <div>
+          <h2 class="m-0">Explore</h2>
+          <div id="explorer-meta" class="muted small"></div>
+        </div>
+        <div class="row-actions items-center">
+          <label class="muted small flex items-center gap-2" for="explore-rows">Records
+            <select id="explore-rows">
+              <option value="100000">first 100 000</option>
+              <option value="1000000" selected>first 1 million</option>
+              <option value="10000000">first 10 million</option>
+              <option value="">all</option>
+            </select>
+          </label>
+          <button id="explore-full" class="button small" type="button">Full screen</button>
+          <button id="explore-close" class="button ghost small" type="button">Close</button>
+        </div>
+      </div>
+      <p class="muted small mt-0">Sort, filter, group, pivot and chart the records with <a href="https://perspective-dev.github.io" rel="noopener">Perspective</a>, running in this page. A few million records are comfortable; more need a browser with plenty of memory.</p>
+      <div id="explorer-loading" class="loading mb-3" hidden><span class="spinner" aria-hidden="true"></span> <span id="explorer-loading-text"></span></div>
+      <div id="explorer-error" class="alert error" hidden></div>
+      <div id="explorer-host" class="explorer-host"></div>
     </section>
 
     <section id="convert" class="card" hidden>

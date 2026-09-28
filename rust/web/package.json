@@ -1,12 +1,18 @@
 {
   "name": "sap-bin-web",
   "private": true,
-  "description": "Builds the page's stylesheet with Tailwind CSS. Only the compiled app.css ships; the page loads nothing but its own files.",
+  "description": "Builds the page's stylesheet with Tailwind CSS, and fetches the Perspective table viewer. Only app.css and the copied Perspective files ship; the page loads nothing but its own files.",
   "scripts": {
     "build:css": "tailwindcss -i styles/app.css -o app.css --minify",
-    "watch:css": "tailwindcss -i styles/app.css -o app.css --watch"
+    "watch:css": "tailwindcss -i styles/app.css -o app.css --watch",
+    "perspective": "node vendor-perspective.mjs"
   },
   "devDependencies": {
+    "@perspective-dev/client": "5.5.1",
+    "@perspective-dev/server": "5.5.1",
+    "@perspective-dev/viewer": "5.5.1",
+    "@perspective-dev/viewer-charts": "5.5.1",
+    "@perspective-dev/viewer-datagrid": "5.5.1",
     "@tailwindcss/cli": "4.3.3",
     "tailwindcss": "4.3.3"
   }

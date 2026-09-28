@@ -35,8 +35,8 @@ use crate::schema::Schema;
 use crate::text::{decode_text_shard, TextOptions};
 pub use crate::writer::Compression;
 use crate::writer::{
-    arrow_schema, encode_text, to_record_batch, DirSink, Encoded, MergedSink, OutputFormat, Sink,
-    TextKind, ZipSink,
+    arrow_schema, encode_text, to_record_batch, Columnar, DirSink, Encoded, MergedSink,
+    OutputFormat, Sink, TextKind, ZipSink,
 };
 use crate::zip::{Entries, IndexedReader, StreamReader};
 
@@ -54,6 +54,8 @@ pub enum Format {
     Tsv,
     Jsonl,
     Parquet,
+    /// Arrow IPC stream.
+    Arrow,
 }
 
 impl Format {
@@ -63,6 +65,7 @@ impl Format {
             "tsv" => Some(Self::Tsv),
             "jsonl" | "ndjson" | "json" => Some(Self::Jsonl),
             "parquet" => Some(Self::Parquet),
+            "arrow" | "arrows" | "ipc" => Some(Self::Arrow),
             _ => None,
         }
     }
@@ -73,6 +76,7 @@ impl Format {
             Self::Tsv => "tsv",
             Self::Jsonl => "jsonl",
             Self::Parquet => "parquet",
+            Self::Arrow => "arrow",
         }
     }
 
@@ -82,6 +86,7 @@ impl Format {
             Self::Tsv => "text/tab-separated-values; charset=utf-8",
             Self::Jsonl => "application/x-ndjson",
             Self::Parquet => "application/vnd.apache.parquet",
+            Self::Arrow => "application/vnd.apache.arrow.stream",
         }
     }
 }
@@ -175,7 +180,7 @@ impl Options {
             }),
             Format::Tsv => Some(TextKind::Csv { delimiter: b'\t' }),
             Format::Jsonl => Some(TextKind::Jsonl),
-            Format::Parquet => None,
+            Format::Parquet | Format::Arrow => None,
         }
     }
 
@@ -1081,6 +1086,11 @@ pub fn convert(
         bom: options.bom,
         compression: options.compression,
         arrow: arrow_schema(&schema, mode),
+        columnar: if options.format == Format::Arrow {
+            Columnar::Arrow
+        } else {
+            Columnar::Parquet
+        },
         extension: options.format.extension(),
     };
     let sink: Box<dyn Sink + Send> = match (output, options.split) {
@@ -1554,6 +1564,57 @@ mod tests {
             names.push(info.name);
         }
         assert_eq!(names, vec!["DATA.1.parquet", "DATA.2.parquet"]);
+    }
+
+    #[test]
+    fn arrow_output_reads_back() {
+        use arrow_array::{Array, Decimal128Array, Float64Array, StringArray};
+        let read = |bytes: Vec<u8>| {
+            arrow_ipc::reader::StreamReader::try_new(Cursor::new(bytes), None)
+                .unwrap()
+                .map(|batch| batch.unwrap())
+                .collect::<Vec<_>>()
+        };
+        let options = Options {
+            format: Format::Arrow,
+            ..Options::default()
+        };
+        let (out, stats) = convert_bytes(reference_archive(), &options).unwrap();
+        let batches = read(out);
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 6);
+        assert_eq!(stats.records, 6);
+        let amounts = batches[0].column_by_name("DMBTR").unwrap();
+        let amounts = amounts.as_any().downcast_ref::<Decimal128Array>().unwrap();
+        assert_eq!(amounts.value_as_string(2), "-1234.56");
+        let belnr = batches[0].column_by_name("BELNR").unwrap();
+        let belnr = belnr.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(belnr.value(0), "1000000001");
+
+        // The viewer asks for floating-point amounts.
+        let float = Options {
+            decimals: DecimalMode::Float,
+            ..options.clone()
+        };
+        let (out, _) = convert_bytes(reference_archive(), &float).unwrap();
+        let amounts = read(out)[0].column_by_name("DMBTR").unwrap().clone();
+        let amounts = amounts.as_any().downcast_ref::<Float64Array>().unwrap();
+        assert_eq!(amounts.value(2), -1234.56);
+        assert!(amounts.len() == 3 && amounts.null_count() == 0);
+
+        let split = Options {
+            split: true,
+            ..options
+        };
+        let (out, _) = convert_bytes(reference_archive(), &split).unwrap();
+        let mut reader = StreamReader::new(Cursor::new(out));
+        let mut names = Vec::new();
+        while let Some(info) = reader.next_entry().unwrap() {
+            let mut body = Vec::new();
+            reader.read_to_end(&mut body).unwrap();
+            assert_eq!(read(body).iter().map(|b| b.num_rows()).sum::<usize>(), 3);
+            names.push(info.name);
+        }
+        assert_eq!(names, vec!["DATA.1.arrow", "DATA.2.arrow"]);
     }
 
     #[test]

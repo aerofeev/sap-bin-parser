@@ -249,6 +249,7 @@
   }
 
   function reset() {
+    if (!$("explorer").hidden) closeExplorer();
     Object.assign(state, { files: [], schema: null, schemaEdited: false, exportName: null, report: null });
     for (const id of ["inspect", "convert", "result", "progress"]) $(id).hidden = true;
     $("drop").hidden = false;
@@ -436,6 +437,7 @@
       $("drop").hidden = true;
     }
 
+    $("explore").hidden = !(state.config.viewer && schema && !report.error && dataFile());
     const editButton = $("edit-schema");
     editButton.hidden = false;
     editButton.textContent = schema ? "Edit schema" : "Define the schema";
@@ -1040,6 +1042,124 @@
     }
   }
 
+  // ---------- exploring ----------
+
+  // Perspective (https://perspective-dev.github.io), served from here like
+  // everything else, runs in a frame of its own (explorer.html): it needs a
+  // looser policy than this page, which holds the files. It gets the records
+  // as Arrow, converted by the engine in the page (or by the server where
+  // the browser cannot), with amounts as floating point, which is what it
+  // computes with.
+  const explorer = { run: null, frame: null, ready: null, pending: null };
+
+  /** The viewer's frame, once it has loaded Perspective. */
+  function explorerFrame() {
+    if (!explorer.frame) {
+      explorer.ready = new Promise((resolve, reject) => {
+        explorer.pending = { resolve, reject };
+      });
+      explorer.frame = el("iframe", { src: "explorer", title: "Records viewer", allow: "fullscreen" });
+      $("explorer-host").append(explorer.frame);
+    }
+    return explorer.ready;
+  }
+
+  window.addEventListener("message", ({ data, origin, source }) => {
+    if (origin !== location.origin || !explorer.frame || source !== explorer.frame.contentWindow) return;
+    const pending = explorer.pending;
+    explorer.pending = null;
+    if (!pending) return;
+    if (data.type === "error") pending.reject(new Error(data.error));
+    else pending.resolve(data.rows);
+  });
+
+  /** Show the records in the frame; resolves to how many it holds. */
+  function showInFrame(arrow, title) {
+    return new Promise((resolve, reject) => {
+      explorer.pending = { resolve, reject };
+      const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+      explorer.frame.contentWindow.postMessage(
+        { type: "load", arrow, title, theme: dark ? "Pro Dark" : "Pro Light" },
+        location.origin,
+        [arrow],
+      );
+    });
+  }
+
+  /** The records as an Arrow IPC stream, at most `limit` of them. */
+  async function recordsAsArrow(limit, onProgress) {
+    const opts = { ...options(), format: "arrow", bom: false, split: false, decimals: "float", limit: limit ? String(limit) : "" };
+    const p = params(opts);
+    if (state.inBrowser) {
+      try {
+        const { stats, file } = await engine.call("convert", { files: state.files, schema: state.schema, params: p }, onProgress);
+        return { arrow: await file.arrayBuffer(), table: stats.table };
+      } catch (error) {
+        if (!error.unavailable) throw error;
+        fallBack();
+      }
+    }
+    // One request, as the curl snippet makes.
+    let body;
+    if (multi() || state.schema) {
+      body = new FormData();
+      if (state.schema) body.append("schema", state.schema, baseName(state.schema.name));
+      for (const file of state.files) body.append("file", file, baseName(file.name));
+    } else {
+      body = dataFile();
+    }
+    const response = await fetch(`api/convert?${query(opts)}`, { method: "POST", body });
+    if (!response.ok) {
+      const problem = await problemText(response);
+      throw Object.assign(new Error(problem.error), { hint: problem.hint });
+    }
+    return { arrow: await response.arrayBuffer(), table: response.headers.get("x-sap-bin-table") };
+  }
+
+  async function explore() {
+    const run = {};
+    explorer.run = run;
+    const limit = Number($("explore-rows").value) || 0;
+    $("explorer").hidden = false;
+    $("explorer-error").hidden = true;
+    $("explorer-loading").hidden = false;
+    $("explorer-loading-text").textContent = "Reading the records…";
+    $("explorer").scrollIntoView({ behavior: "smooth", block: "start" });
+    try {
+      const [records] = await Promise.all([
+        recordsAsArrow(limit, (p) => {
+          if (explorer.run === run) $("explorer-loading-text").textContent = `Reading the records… ${number.format(p.records)}`;
+        }),
+        explorerFrame(),
+      ]);
+      if (explorer.run !== run) return;
+      $("explorer-loading-text").textContent = "Building the table…";
+      const rows = await showInFrame(records.arrow, records.table || "Records");
+      if (explorer.run !== run) return;
+      $("explorer-meta").textContent = limit && rows >= limit
+        ? `The first ${number.format(rows)} records of ${records.table}`
+        : `All ${number.format(rows)} records of ${records.table}`;
+    } catch (error) {
+      if (explorer.run !== run) return;
+      const box = $("explorer-error");
+      box.hidden = false;
+      box.replaceChildren(el("strong", {}, "The records could not be shown."),
+        el("p", { class: "mono small" }, error.message || String(error)),
+        error.hint ? el("p", { class: "small" }, error.hint) : null);
+    } finally {
+      if (explorer.run === run) $("explorer-loading").hidden = true;
+    }
+  }
+
+  /** Close the viewer; removing its frame frees everything it held. */
+  function closeExplorer() {
+    explorer.run = null;
+    $("explorer").hidden = true;
+    if (explorer.frame) explorer.frame.remove();
+    if (explorer.pending) explorer.pending.reject(new Error("closed"));
+    Object.assign(explorer, { frame: null, ready: null, pending: null });
+  }
+
   // ---------- wiring ----------
 
   function wire() {
@@ -1054,6 +1174,14 @@
       acceptFiles(files, folder);
     });
     $("try-sample").addEventListener("click", trySample);
+    $("explore").addEventListener("click", explore);
+    // Perspective takes a moment to start: begin as soon as it is likely wanted.
+    for (const event of ["pointerenter", "focus"]) {
+      $("explore").addEventListener(event, () => explorerFrame().catch(() => {}), { once: true });
+    }
+    $("explore-rows").addEventListener("change", () => { if (!$("explorer").hidden) explore(); });
+    $("explore-close").addEventListener("click", closeExplorer);
+    $("explore-full").addEventListener("click", () => $("explorer-host").requestFullscreen().catch(() => {}));
     $("reset").addEventListener("click", reset);
     $("go").addEventListener("click", startConversion);
     $("cancel").addEventListener("click", cancel);

@@ -64,10 +64,13 @@ const STATS_HTML: &str = include_str!("../web/stats.html");
 const STATS_JS: &str = include_str!("../web/stats.js");
 const INTER: &[u8] = include_bytes!("../web/fonts/Inter.var.woff2");
 const WORKER_JS: &str = include_str!("../web/convert-worker.js");
+const EXPLORER_HTML: &str = include_str!("../web/explorer.html");
+const EXPLORER_JS: &str = include_str!("../web/explorer.js");
 
-/// The engine compiled to WebAssembly, if it was built (see build.rs).
-mod wasm {
-    include!(concat!(env!("OUT_DIR"), "/wasm.rs"));
+/// The page's optional parts, if they were built (see build.rs): the engine
+/// compiled to WebAssembly, and the Perspective table viewer.
+mod parts {
+    include!(concat!(env!("OUT_DIR"), "/web_parts.rs"));
 }
 
 /// The page's Content-Security-Policy: nothing from anywhere but here, and
@@ -75,6 +78,16 @@ mod wasm {
 const CSP: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; font-src 'self'; \
                    connect-src 'self'; form-action 'self'; frame-src 'self'; frame-ancestors 'self'; \
                    base-uri 'none'";
+
+/// The table viewer's frame. Perspective loads parts of itself from `blob:`
+/// URLs, as scripts and workers, which the page's own policy forbids; so the
+/// viewer runs in a frame of its own with this policy, and the page, which
+/// holds the files, keeps the strict one. It still reaches nothing but this
+/// origin.
+const VIEWER_CSP: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval' blob:; \
+                          worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; \
+                          img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob:; \
+                          frame-ancestors 'self'; form-action 'none'; base-uri 'none'";
 
 /// How the service runs.
 #[derive(Debug, Clone)]
@@ -326,6 +339,12 @@ fn router(config: Config, usage: Arc<Usage>) -> Router {
         )
         .route("/assets/wasm/sap_bin_wasm.js", get(wasm_glue))
         .route("/assets/wasm/sap_bin_wasm_bg.wasm", get(wasm_module))
+        .route("/assets/perspective/{*path}", get(perspective_file))
+        .route("/explorer", get(explorer_page))
+        .route(
+            "/assets/explorer.js",
+            get(|| async { asset("text/javascript; charset=utf-8", EXPLORER_JS) }),
+        )
         .route(
             "/api/usage",
             post(usage_report).layer(DefaultBodyLimit::max(4096)),
@@ -510,30 +529,56 @@ async fn config_info(State(state): State<Shared>) -> Json<serde_json::Value> {
         "local": state.config.local,
         "max_upload_bytes": state.config.max_upload,
         "threads": state.config.threads_per_job(),
-        // The page may convert in the browser itself.
-        "browser": !wasm::WASM.is_empty(),
+        // The page may convert in the browser itself, and show a table viewer.
+        "browser": !parts::WASM.is_empty(),
+        "viewer": !parts::PERSPECTIVE.is_empty(),
     }))
 }
 
 /// `GET assets/wasm/sap_bin_wasm.js`: the JavaScript half of the engine's
 /// WebAssembly build.
 async fn wasm_glue() -> Response {
-    if wasm::JS.is_empty() {
+    if parts::JS.is_empty() {
         return StatusCode::NOT_FOUND.into_response();
     }
-    asset("text/javascript; charset=utf-8", wasm::JS)
+    asset("text/javascript; charset=utf-8", parts::JS)
 }
 
 /// `GET assets/wasm/sap_bin_wasm_bg.wasm`: the engine for the browser.
-/// Megabytes, so it is sent compressed (compressed once, on first request)
-/// and revalidated by ETag rather than downloaded again.
 async fn wasm_module(headers: HeaderMap) -> Response {
-    static GZIP: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    static ZSTD: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    if wasm::WASM.is_empty() {
+    if parts::WASM.is_empty() {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let etag = format!("\"{}-{}\"", crate::VERSION, wasm::WASM.len());
+    static_file(&headers, "application/wasm", parts::WASM).await
+}
+
+/// `GET explorer`: the frame the page shows its table viewer in.
+async fn explorer_page() -> Response {
+    if parts::PERSPECTIVE.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let mut response = asset("text/html; charset=utf-8", EXPLORER_HTML);
+    response.headers_mut().insert(
+        "content-security-policy",
+        HeaderValue::from_static(VIEWER_CSP),
+    );
+    response
+}
+
+/// `GET assets/perspective/...`: the Perspective table viewer.
+async fn perspective_file(Path(path): Path<String>, headers: HeaderMap) -> Response {
+    match parts::PERSPECTIVE.iter().find(|(name, _, _)| *name == path) {
+        Some((_, kind, body)) => static_file(&headers, kind, body).await,
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// A large embedded file: sent compressed (compressed once, on first
+/// request) and revalidated by ETag rather than downloaded again.
+async fn static_file(headers: &HeaderMap, kind: &'static str, body: &'static [u8]) -> Response {
+    type Cache = Mutex<HashMap<(usize, Encoding), &'static [u8]>>;
+    static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+    let etag = format!("\"{}-{:x}\"", crate::VERSION, crc32fast::hash(body));
     let fresh = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
@@ -541,32 +586,36 @@ async fn wasm_module(headers: HeaderMap) -> Response {
     let mut response = if fresh {
         StatusCode::NOT_MODIFIED.into_response()
     } else {
-        let (coding, body): (Option<&str>, &'static [u8]) = if Encoding::Zstd.accepted(&headers) {
-            let body = tokio::task::spawn_blocking(|| {
-                ZSTD.get_or_init(|| zstd::encode_all(wasm::WASM, 9).unwrap_or_default())
-                    .as_slice()
-            })
-            .await
-            .unwrap_or_default();
-            (Some("zstd"), body)
-        } else if Encoding::Gzip.accepted(&headers) {
-            let body = tokio::task::spawn_blocking(|| {
-                GZIP.get_or_init(|| {
-                    let mut encoder =
-                        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
-                    let _ = encoder.write_all(wasm::WASM);
-                    encoder.finish().unwrap_or_default()
-                })
-                .as_slice()
-            })
-            .await
-            .unwrap_or_default();
-            (Some("gzip"), body)
-        } else {
-            (None, wasm::WASM)
+        let encoding = [Encoding::Zstd, Encoding::Gzip]
+            .into_iter()
+            .find(|e| e.accepted(headers))
+            .unwrap_or(Encoding::Identity);
+        let key = (body.as_ptr() as usize, encoding);
+        let cached = CACHE
+            .get_or_init(Cache::default)
+            .lock()
+            .unwrap()
+            .get(&key)
+            .copied();
+        let sent = match (cached, encoding) {
+            (Some(bytes), _) => bytes,
+            (None, Encoding::Identity) => body,
+            (None, _) => {
+                let bytes = tokio::task::spawn_blocking(move || compress(body, encoding))
+                    .await
+                    .unwrap_or_default();
+                // Kept for the life of the process: a handful of files.
+                let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+                CACHE
+                    .get_or_init(Cache::default)
+                    .lock()
+                    .unwrap()
+                    .insert(key, bytes);
+                bytes
+            }
         };
-        let mut response = ([(header::CONTENT_TYPE, "application/wasm")], body).into_response();
-        if let Some(coding) = coding {
+        let mut response = ([(header::CONTENT_TYPE, kind)], sent).into_response();
+        if let Some(coding) = encoding.header() {
             response
                 .headers_mut()
                 .insert(header::CONTENT_ENCODING, HeaderValue::from_static(coding));
@@ -580,6 +629,19 @@ async fn wasm_module(headers: HeaderMap) -> Response {
         headers.insert(header::ETAG, value);
     }
     response
+}
+
+fn compress(body: &[u8], encoding: Encoding) -> Vec<u8> {
+    match encoding {
+        Encoding::Zstd => zstd::encode_all(body, 9).unwrap_or_default(),
+        Encoding::Gzip => {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+            let _ = encoder.write_all(body);
+            encoder.finish().unwrap_or_default()
+        }
+        Encoding::Identity => body.to_vec(),
+    }
 }
 
 /// What the page reports after converting in the browser: totals only, the
@@ -685,7 +747,9 @@ async fn guard(State(state): State<Shared>, request: Request, next: Next) -> Res
     }
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert("content-security-policy", HeaderValue::from_static(CSP));
+    if !headers.contains_key("content-security-policy") {
+        headers.insert("content-security-policy", HeaderValue::from_static(CSP));
+    }
     headers.insert(
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
@@ -878,7 +942,7 @@ impl Entries for ChannelReader {
 /// internet a conversion is limited by the network rather than the engine,
 /// and CSV shrinks several times over, so compressing makes it that much
 /// faster. Browsers decompress as they save: the file on disk is the same.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Encoding {
     Identity,
     Gzip,

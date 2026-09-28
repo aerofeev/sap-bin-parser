@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Decimal128Array, Float64Array, RecordBatch, StringArray};
 use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema, SchemaRef};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression as ParquetCompression, GzipLevel, ZstdLevel};
@@ -331,7 +332,53 @@ pub struct OutputFormat {
     pub bom: bool,
     pub compression: Compression,
     pub arrow: SchemaRef,
+    /// How record batches are stored, when the output is not text.
+    pub columnar: Columnar,
     pub extension: &'static str,
+}
+
+/// Columnar output formats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Columnar {
+    Parquet,
+    /// The Arrow IPC stream format, which pandas, Polars, DuckDB and the
+    /// page's table viewer read as it is.
+    Arrow,
+}
+
+/// Writes record batches in a columnar format.
+enum Columns<W: Write + Send> {
+    Parquet(Box<ArrowWriter<W>>),
+    Arrow(Box<StreamWriter<W>>),
+}
+
+impl<W: Write + Send> Columns<W> {
+    fn new(out: W, format: &OutputFormat) -> Result<Self> {
+        Ok(match format.columnar {
+            Columnar::Parquet => Columns::Parquet(Box::new(ArrowWriter::try_new(
+                out,
+                format.arrow.clone(),
+                Some(parquet_properties(format.compression)),
+            )?)),
+            Columnar::Arrow => Columns::Arrow(Box::new(StreamWriter::try_new(out, &format.arrow)?)),
+        })
+    }
+
+    fn write(&mut self, batch: &RecordBatch) -> Result<()> {
+        match self {
+            Columns::Parquet(writer) => writer.write(batch)?,
+            Columns::Arrow(writer) => writer.write(batch)?,
+        }
+        Ok(())
+    }
+
+    /// Write the footer (or end-of-stream marker) and return the output.
+    fn into_inner(self) -> Result<W> {
+        Ok(match self {
+            Columns::Parquet(writer) => writer.into_inner()?,
+            Columns::Arrow(writer) => writer.into_inner()?,
+        })
+    }
 }
 
 /// Where encoded output goes.
@@ -343,14 +390,14 @@ pub trait Sink {
     fn finish(self: Box<Self>) -> Result<()>;
 }
 
-/// A single output file: CSV, JSON Lines or Parquet.
+/// A single output file: CSV, JSON Lines, Parquet or Arrow.
 pub struct MergedSink<W: Write + Send> {
     state: Merged<W>,
 }
 
 enum Merged<W: Write + Send> {
     Text(W),
-    Parquet(Box<ArrowWriter<W>>),
+    Columns(Columns<W>),
 }
 
 impl<W: Write + Send> MergedSink<W> {
@@ -362,11 +409,7 @@ impl<W: Write + Send> MergedSink<W> {
                 out.write_all(&header)?;
                 Merged::Text(out)
             }
-            None => Merged::Parquet(Box::new(ArrowWriter::try_new(
-                out,
-                format.arrow.clone(),
-                Some(parquet_properties(format.compression)),
-            )?)),
+            None => Merged::Columns(Columns::new(out, format)?),
         };
         Ok(Self { state })
     }
@@ -380,7 +423,7 @@ impl<W: Write + Send> Sink for MergedSink<W> {
     fn write(&mut self, chunk: Encoded) -> Result<()> {
         match (&mut self.state, chunk) {
             (Merged::Text(out), Encoded::Text { bytes, .. }) => out.write_all(&bytes)?,
-            (Merged::Parquet(writer), Encoded::Batch(batch)) => writer.write(&batch)?,
+            (Merged::Columns(writer), Encoded::Batch(batch)) => writer.write(&batch)?,
             _ => unreachable!("chunk kind does not match the output format"),
         }
         Ok(())
@@ -393,10 +436,7 @@ impl<W: Write + Send> Sink for MergedSink<W> {
     fn finish(self: Box<Self>) -> Result<()> {
         match self.state {
             Merged::Text(mut out) => out.flush()?,
-            Merged::Parquet(writer) => {
-                let mut out = writer.into_inner()?;
-                out.flush()?;
-            }
+            Merged::Columns(writer) => writer.into_inner()?.flush()?,
         }
         Ok(())
     }
@@ -412,7 +452,7 @@ pub struct ZipSink<W: Write + Send> {
 enum Zipped<W: Write + Send> {
     Idle(ZipWriter<W>),
     Text(ZipWriter<W>),
-    Parquet(Box<ArrowWriter<ZipWriter<W>>>),
+    Columns(Columns<ZipWriter<W>>),
 }
 
 impl<W: Write + Send> ZipSink<W> {
@@ -438,11 +478,7 @@ impl<W: Write + Send> Sink for ZipSink<W> {
                 zip.write_all(&header)?;
                 Zipped::Text(zip)
             }
-            None => Zipped::Parquet(Box::new(ArrowWriter::try_new(
-                zip,
-                self.format.arrow.clone(),
-                Some(parquet_properties(self.format.compression)),
-            )?)),
+            None => Zipped::Columns(Columns::new(zip, &self.format)?),
         });
         Ok(())
     }
@@ -450,7 +486,7 @@ impl<W: Write + Send> Sink for ZipSink<W> {
     fn write(&mut self, chunk: Encoded) -> Result<()> {
         match (self.state.as_mut(), chunk) {
             (Some(Zipped::Text(zip)), Encoded::Text { bytes, .. }) => zip.write_all(&bytes)?,
-            (Some(Zipped::Parquet(writer)), Encoded::Batch(batch)) => writer.write(&batch)?,
+            (Some(Zipped::Columns(writer)), Encoded::Batch(batch)) => writer.write(&batch)?,
             _ => unreachable!("chunk written outside a shard"),
         }
         Ok(())
@@ -459,7 +495,7 @@ impl<W: Write + Send> Sink for ZipSink<W> {
     fn end_shard(&mut self) -> Result<()> {
         let mut zip = match self.state.take() {
             Some(Zipped::Text(zip)) => zip,
-            Some(Zipped::Parquet(writer)) => writer.into_inner()?,
+            Some(Zipped::Columns(writer)) => writer.into_inner()?,
             _ => unreachable!("no shard open"),
         };
         zip.finish_entry()?;
@@ -511,7 +547,7 @@ impl Sink for DirSink {
     fn write(&mut self, chunk: Encoded) -> Result<()> {
         match (self.current.as_mut(), chunk) {
             (Some(Merged::Text(out)), Encoded::Text { bytes, .. }) => out.write_all(&bytes)?,
-            (Some(Merged::Parquet(writer)), Encoded::Batch(batch)) => writer.write(&batch)?,
+            (Some(Merged::Columns(writer)), Encoded::Batch(batch)) => writer.write(&batch)?,
             _ => unreachable!("chunk written outside a shard"),
         }
         Ok(())

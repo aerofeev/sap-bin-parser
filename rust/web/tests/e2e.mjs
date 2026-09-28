@@ -48,7 +48,9 @@ async function waitForServer() {
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
 try {
   await waitForServer();
-  const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1200, height: 900 } });
+  // A real locale: headless Chromium may report the system's (en-US@posix),
+  // which Intl, and so Perspective, rejects.
+  const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1200, height: 900 }, locale: "en-US" });
   const page = await context.newPage();
   const problems = [];
   // Requests that would carry an export to the server.
@@ -229,7 +231,7 @@ open(sys.argv[1] + "/big.BIN", "wb").write(data * 5)
   await page.screenshot({ path: join(outDir, "phone.png"), fullPage: true });
 
   // 7. Dark mode renders.
-  const dark = await browser.newContext({ colorScheme: "dark", viewport: { width: 1200, height: 900 } });
+  const dark = await browser.newContext({ colorScheme: "dark", viewport: { width: 1200, height: 900 }, locale: "en-US" });
   const darkPage = await dark.newPage();
   await darkPage.goto(`${base}/${pageUrl}`);
   await darkPage.click("#try-sample");
@@ -269,6 +271,23 @@ open(sys.argv[1] + "/big.BIN", "wb").write(data * 5)
   await page.reload();
   await page.waitForSelector("#dashboard:not([hidden])");
   check(true, "stats: the token lasts for the tab");
+
+  // 10. The table viewer, in a frame of its own.
+  await page.goto(`${base}/${pageUrl}`);
+  await page.click("#try-sample");
+  await page.waitForSelector("#explore:not([hidden])");
+  await page.click("#explore");
+  await page.waitForFunction(() => /records of/.test(document.getElementById("explorer-meta").textContent)
+    || !document.getElementById("explorer-error").hidden, null, { timeout: 120000 });
+  const explored = await page.textContent("#explorer-meta");
+  check(explored === "All 60,000 records of BSIS", `the viewer holds the records (${explored || await page.textContent("#explorer-error")})`);
+  const frame = page.frameLocator("#explorer-host iframe");
+  await frame.locator("perspective-viewer").waitFor();
+  const pagePolicy = await page.evaluate(async () => (await fetch(".", { cache: "no-store" })).headers.get("content-security-policy"));
+  check(!/blob:/.test(pagePolicy), "the page's own policy stays strict; only the viewer's frame allows blob:");
+  await page.locator("#explorer").screenshot({ path: join(outDir, "explorer.png") });
+  await page.click("#explore-close");
+  check(await page.locator("#explorer-host iframe").count() === 0, "closing the viewer removes its frame");
 
   check(problems.length === 0, `no console errors${problems.length ? `: ${problems.join(" | ")}` : ""}`);
   console.log("all browser checks passed");
