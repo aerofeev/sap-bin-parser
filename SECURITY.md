@@ -22,6 +22,12 @@ nothing:
   only to `localhost`, which defeats DNS-rebinding attacks.
 - Uploads are limited in size (`SAPBIN_MAX_UPLOAD_MB`) and conversions in number
   (`SAPBIN_MAX_CONCURRENCY`); excess requests get 413 and 503.
+- Usage statistics are aggregate totals only (conversions, records and bytes by format,
+  input, SAP table name and day), with no address, file name, field or value. They are
+  served only with the operator's token, compared in constant time; without a token the
+  routes do not exist. With `SAPBIN_STATS_FILE` set, that one file is saved (through a
+  temporary file and a rename). It is the only thing the service ever writes, and the
+  `strace` proof checks exactly that.
 
 For the strongest guarantee, use the app: it runs the same page on your own machine and
 your files never leave it.
@@ -32,6 +38,10 @@ Terminate TLS in front of the service. Keep its container read-only with no capa
 (`deploy/docker-compose.yml`). A reverse proxy must not buffer request or response bodies
 to disk (for nginx: `proxy_request_buffering off; proxy_buffering off;`), or it would
 store what the service does not.
+
+If you turn on usage statistics, generate the token randomly (`openssl rand -hex 24`), keep
+it out of version control (`deploy/tools.eidox.io/` reads it from an `.env` file), and give
+the statistics file a volume of its own, so the rest of the container stays read-only.
 
 ## Reporting a vulnerability
 

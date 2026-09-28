@@ -59,6 +59,13 @@ whose upload goes quiet for ten minutes is cancelled.
 | `POST api/inspect` | describe an export from a multipart `head` (its first bytes), and optionally `tail`, `size`, `schema`, `record_size` |
 | `GET api/sample` | a synthetic export (`records`, `shards`) |
 | `GET api/config`, `GET healthz` | version and limits |
+| `GET api/stats`, `GET metrics` | usage statistics as JSON, or for Prometheus; with the operator's token (`Authorization: Bearer ...`), and only when one is set |
+
+Downloads of CSV, TSV and JSON Lines are compressed on the wire when the request accepts
+it (`Accept-Encoding`: zstd, else gzip), which browsers undo as they save. `curl` gets the
+plain file unless you pass `--compressed`, which is worth doing over a slow link. Parquet
+and zipped shards are compressed already and are sent as they are. For a job, the
+compression follows the `Accept-Encoding` of the request that created it.
 
 ## Parameters
 

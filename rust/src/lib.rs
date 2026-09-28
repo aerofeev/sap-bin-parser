@@ -23,6 +23,7 @@ pub mod sample;
 pub mod schema;
 pub mod server;
 pub mod text;
+pub mod usage;
 pub mod writer;
 pub mod zip;
 

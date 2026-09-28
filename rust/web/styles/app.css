@@ -1,0 +1,320 @@
+/*
+ * The page's stylesheet: Tailwind CSS with shadcn/ui's design tokens.
+ *
+ * Source of ../app.css, which is what the binary serves. After changing this
+ * file, the markup, or a class name in the scripts, rebuild it:
+ *
+ *   cd rust/web && npm install && npm run build:css
+ *
+ * CI fails if the committed app.css is out of date. Components the scripts
+ * create (buttons, alerts, stat tiles, tables) keep short semantic class
+ * names, defined below with @apply; layout in the markup uses utilities.
+ */
+@import "tailwindcss" source(none);
+@source "../index.html";
+@source "../stats.html";
+@source "../app.js";
+@source "../stats.js";
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("../fonts/inter-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("../fonts/inter-cyrillic-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+
+/* shadcn/ui "neutral" theme, light and dark. */
+:root {
+  --radius: 0.5rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --success: oklch(0.527 0.154 150.069);
+  --warning: oklch(0.555 0.163 48.998);
+  --info: oklch(0.488 0.217 264.376);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --canvas: oklch(0.985 0 0);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --success: oklch(0.723 0.191 149.579);
+    --warning: oklch(0.769 0.188 70.08);
+    --info: oklch(0.707 0.165 254.624);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --canvas: oklch(0.145 0 0);
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-canvas: var(--canvas);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * { @apply border-border; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    @apply bg-canvas text-foreground font-sans text-[15px] leading-relaxed antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+  a { @apply underline-offset-4; }
+  code, .mono { @apply font-mono text-[0.9em]; }
+  [hidden] { display: none !important; }
+  h1, h2, h3 { @apply font-semibold tracking-tight text-foreground; }
+  :focus-visible { @apply outline-none ring-[3px] ring-ring/50; }
+  select, input[type="number"], input[type="text"], input[type="password"], textarea {
+    @apply rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-xs
+      transition-[color,box-shadow] placeholder:text-muted-foreground;
+    font: inherit;
+    font-size: 0.875rem;
+  }
+  select, input[type="number"], input[type="text"], input[type="password"] { @apply h-9; }
+  textarea { @apply w-full px-3 py-2 font-mono text-[0.8rem] leading-normal; }
+  select:focus-visible, input:focus-visible, textarea:focus-visible { @apply border-ring; }
+  input[type="checkbox"] { @apply size-4 accent-primary; }
+  summary { @apply cursor-pointer text-sm font-medium text-muted-foreground select-none; }
+  summary:hover { @apply text-foreground; }
+  details { @apply my-3; }
+}
+
+@layer components {
+  /* Layout */
+  .shell { @apply mx-auto w-full max-w-6xl px-4 sm:px-6; }
+  .card { @apply mb-4 rounded-xl border bg-card p-5 text-card-foreground shadow-sm sm:p-6; }
+  .card h2 { @apply mb-4 text-lg; }
+  .muted { @apply text-muted-foreground; }
+  .small { @apply text-[0.8125rem]; }
+  .eyebrow { @apply text-xs font-medium tracking-wide text-muted-foreground uppercase; }
+  .spacer { @apply flex-1; }
+  .sr-only { @apply absolute size-px overflow-hidden whitespace-nowrap; clip: rect(0 0 0 0); }
+
+  /* Buttons (shadcn: default = primary, outline, ghost; sizes sm, default, lg) */
+  .button {
+    @apply inline-flex h-9 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md border
+      bg-background px-4 text-sm font-medium whitespace-nowrap text-foreground no-underline shadow-xs
+      transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none
+      disabled:opacity-50;
+  }
+  .button.primary {
+    @apply border-transparent bg-primary text-primary-foreground hover:bg-primary/90;
+  }
+  .button.ghost { @apply border-transparent bg-transparent shadow-none hover:bg-accent; }
+  .button.small { @apply h-8 gap-1.5 rounded-md px-3 text-[0.8125rem]; }
+  .button.big { @apply h-10 px-6; }
+  .icon-button {
+    @apply inline-flex size-8 cursor-pointer items-center justify-center rounded-md text-muted-foreground
+      transition-colors hover:bg-accent hover:text-accent-foreground disabled:cursor-default
+      disabled:opacity-35;
+  }
+
+  /* Header and footer */
+  .bar-links a { @apply text-sm font-medium text-muted-foreground no-underline transition-colors hover:text-foreground; }
+  .badge {
+    @apply inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium
+      text-muted-foreground;
+  }
+  .badge.live { @apply border-success/30 bg-success/10 text-success; }
+  .maker { @apply text-inherit no-underline hover:text-foreground hover:underline; }
+
+  /* The drop zone */
+  .drop {
+    @apply rounded-xl border-2 border-dashed bg-card p-0 transition-colors;
+  }
+  .drop.over { @apply border-primary bg-accent; }
+  .drop-inner { @apply px-5 py-12 text-center max-sm:px-3 max-sm:py-8; }
+  .drop-icon {
+    @apply mx-auto mb-4 flex size-12 items-center justify-center rounded-full border bg-muted text-muted-foreground;
+  }
+  .drop-icon svg { @apply size-6 fill-none stroke-current stroke-2; stroke-linecap: round; stroke-linejoin: round; }
+  .drop-title { @apply mb-1 text-lg font-semibold tracking-tight; }
+  .drop-sub { @apply mx-auto mb-6 max-w-xl text-sm text-muted-foreground; }
+  .drop-actions { @apply flex flex-wrap justify-center gap-2; }
+  .drop-actions.start { @apply justify-start; }
+  .pad { @apply p-2.5; }
+
+  /* Inspection */
+  .file-row { @apply mb-5 flex items-center justify-between gap-3 max-sm:flex-col max-sm:items-start; }
+  .file-name { @apply font-semibold break-all; }
+  .row-actions { @apply flex flex-wrap gap-2; }
+  .loading { @apply flex items-center gap-2.5 text-sm text-muted-foreground; }
+  .spinner {
+    @apply size-4 animate-spin rounded-full border-2 border-border border-t-foreground motion-reduce:animate-none;
+  }
+  .stats { @apply mb-4 grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-3; }
+  .stat { @apply rounded-lg border bg-card px-4 py-3; }
+  .stat-label { @apply text-xs font-medium text-muted-foreground; }
+  .stat-value { @apply mt-0.5 text-xl font-semibold tracking-tight tabular-nums; }
+  .stat-note { @apply text-xs text-muted-foreground; }
+
+  /* Alerts (shadcn Alert, with status colours) */
+  .alert {
+    @apply relative my-3 rounded-lg border bg-card px-4 py-3 text-sm;
+  }
+  .alert p { @apply mt-1.5 mb-0; }
+  .alert strong { @apply font-medium; }
+  .alert.error { @apply border-destructive/30 bg-destructive/5 text-destructive; }
+  .alert.warn { @apply border-warning/30 bg-warning/5 text-warning; }
+  .alert.ok { @apply border-success/30 bg-success/5 text-success; }
+  .alert.info { @apply bg-muted/50 text-foreground; }
+  .alert .mono { @apply text-foreground break-words; }
+  .tag {
+    @apply ml-1.5 inline-flex items-center rounded-md border border-warning/30 bg-warning/10 px-1.5 py-px
+      align-middle text-[0.7rem] font-medium text-warning;
+  }
+
+  /* Tabs (shadcn Tabs) */
+  .tabs { @apply mt-2; }
+  .tab-list { @apply mb-3 inline-flex h-9 items-center rounded-lg bg-muted p-[3px] text-muted-foreground; }
+  [role="tab"] {
+    @apply inline-flex h-full cursor-pointer items-center rounded-md border border-transparent px-3 text-sm
+      font-medium whitespace-nowrap transition-all hover:text-foreground;
+    background: none;
+  }
+  [role="tab"][aria-selected="true"] { @apply bg-background text-foreground shadow-sm; }
+
+  /* Tables (shadcn Table) */
+  .table-wrap { @apply max-h-[460px] overflow-auto rounded-lg border bg-card; }
+  table { @apply w-full caption-bottom border-collapse text-[0.8125rem]; }
+  th, td { @apply border-b px-3 py-2 text-left whitespace-nowrap; }
+  th { @apply sticky top-0 z-[1] h-10 bg-muted font-medium text-muted-foreground; }
+  tbody tr { @apply transition-colors hover:bg-muted/50; }
+  tr:last-child td { @apply border-b-0; }
+  th.num { @apply text-right; }
+  td.num { @apply text-right font-mono tabular-nums; }
+  td.null { @apply text-muted-foreground italic; }
+
+  /* Conversion */
+  .formats { @apply mb-4 grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-3; }
+  .formats label { @apply cursor-pointer; }
+  .formats input { @apply pointer-events-none absolute opacity-0; }
+  .formats span {
+    @apply flex h-full flex-col rounded-lg border bg-card px-4 py-3 text-sm shadow-xs transition-colors
+      hover:bg-accent/50;
+  }
+  .formats b { @apply font-medium; }
+  .formats small { @apply text-xs text-muted-foreground; }
+  .formats input:checked + span { @apply border-primary ring-1 ring-primary; }
+  .formats input:focus-visible + span { @apply ring-[3px] ring-ring/50; }
+  .check { @apply mt-1 mb-3 flex cursor-pointer items-center gap-2 text-sm; }
+  .grid-options { @apply mt-3 grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-4; }
+  .grid-options label { @apply flex flex-col gap-1.5 text-sm font-medium; }
+  .go { @apply mt-5 flex flex-wrap items-center gap-3.5; }
+  .progress { @apply mt-5; }
+  .meter { @apply h-2 overflow-hidden rounded-full bg-muted; }
+  #meter-fill { @apply h-full w-0 rounded-full bg-primary transition-[width] duration-300; }
+  .meter.indeterminate #meter-fill { width: 30%; animation: slide 1.2s ease-in-out infinite; }
+  .progress-row { @apply mt-2 flex items-center justify-between gap-2.5 text-sm tabular-nums; }
+  .snippet { @apply relative mt-3; }
+  .snippet-label { @apply mb-1 text-xs font-medium text-muted-foreground; }
+  .snippet pre {
+    @apply m-0 overflow-x-auto rounded-lg border bg-muted/50 py-3 pr-20 pl-3 font-mono text-[0.8rem] leading-normal;
+  }
+  .snippet .button { @apply absolute top-6 right-1.5; }
+
+  /* Schema editor */
+  .editor { @apply my-3 rounded-lg border bg-muted/40 p-4; }
+  .editor h3 { @apply m-0 text-base; }
+  .editor-head { @apply mb-1 flex flex-wrap items-baseline gap-3; }
+  .editor p { @apply mt-0 mb-2.5; }
+  .editor-wrap { @apply max-h-[380px]; }
+  .editor td { @apply px-1.5 py-1; }
+  .editor input, .editor select { @apply h-8 w-full min-w-16 px-2; }
+  .editor input[type="text"] { @apply min-w-30 font-mono; }
+  .editor .auto { @apply text-muted-foreground; }
+  .editor-actions { @apply mt-2.5 flex flex-wrap items-center gap-2; }
+  .paste-label { @apply mt-2.5 mb-1 block text-sm text-muted-foreground; }
+
+  /* How it works, run it yourself */
+  .info { @apply my-10 grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-6; }
+  .info > div { @apply rounded-xl border bg-card p-6 shadow-sm; }
+  .info h2 { @apply mb-3 text-lg; }
+  .info ul { @apply m-0 list-disc space-y-2 pl-5 text-sm text-muted-foreground marker:text-border; }
+  .info p { @apply mt-0 mb-3 text-sm text-muted-foreground; }
+  .info b, .info a { @apply text-foreground; }
+  .downloads { @apply my-4 flex flex-wrap gap-2; }
+
+  /* The operator's usage dashboard */
+  .kpis { @apply grid grid-cols-2 gap-3 lg:grid-cols-4; }
+  .kpi { @apply rounded-xl border bg-card p-5 shadow-sm; }
+  .kpi-label { @apply text-sm font-medium text-muted-foreground; }
+  .kpi-value { @apply mt-1 text-2xl font-semibold tracking-tight tabular-nums sm:text-3xl; }
+  .kpi-note { @apply mt-1 text-xs text-muted-foreground; }
+  .chart { @apply h-48 w-full; }
+  .chart .bar-rect { fill: var(--primary); }
+  .chart .bar-rect:hover { opacity: 0.8; }
+  .chart .axis { @apply fill-muted-foreground text-[10px]; }
+  .chart .gridline { stroke: var(--border); }
+  .share { @apply flex items-center gap-3 text-sm; }
+  .share-bar { @apply h-2 flex-1 overflow-hidden rounded-full bg-muted; }
+  .share-fill { @apply h-full rounded-full bg-primary; }
+}
+
+@keyframes slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(340%); }
+}

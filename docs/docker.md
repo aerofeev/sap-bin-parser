@@ -33,8 +33,27 @@ Then open <http://localhost:8080/>. The container needs no writable file system.
 | `SAPBIN_THREADS` | `--threads` | CPUs ÷ concurrency | worker threads per conversion |
 | `PORT` | `--port` | 8080 | |
 | `SAPBIN_LOG` | | `info` | log level |
+| `SAPBIN_STATS_TOKEN` | `--stats-token` | (none) | unlocks the usage statistics at `stats`, `api/stats` and `metrics`; at least 24 characters |
+| `SAPBIN_STATS_FILE` | `--stats-file` | (none) | keep the statistics in this file across restarts; without it, they are in memory only |
 
 Each conversion needs about 150 MB of memory, whatever the size of the export.
+
+## Usage statistics
+
+Set a token and the service counts, for you only, how it is used. The counts are
+conversions, records and bytes, by format, input, SAP table and day; nothing identifies a
+person or a file ([what exactly](privacy.md#usage-statistics)). To keep the totals across
+restarts, give them a volume. The rest of the container stays read-only:
+
+```bash
+docker run -d --read-only -p 127.0.0.1:8080:8080 -v sap-bin-usage:/data \
+  -e SAPBIN_STATS_FILE=/data/usage.json -e SAPBIN_STATS_TOKEN="$(openssl rand -hex 24)" \
+  ghcr.io/aerofeev/sap-bin-parser
+```
+
+Open `/stats` in a browser and enter the token, or read `/api/stats` (JSON) or `/metrics`
+(Prometheus) with `Authorization: Bearer <token>`. The totals are saved every minute and
+when the container stops.
 
 ## Behind a reverse proxy
 

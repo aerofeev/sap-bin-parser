@@ -8,6 +8,33 @@
    touch the proxy's disk.
 3. Check it: `curl -fsS https://tools.eidox.io/sap-bin-parser/healthz`.
 
+## Usage statistics
+
+The service counts, for its operator only, how it is used: conversions, records and bytes,
+by output format, input, SAP table and day. Nothing in it identifies a person or a file.
+
+1. Next to `docker-compose.yml`, create the token once, then restart:
+
+   ```bash
+   echo "SAPBIN_STATS_TOKEN=$(openssl rand -hex 24)" > .env
+   docker compose up -d
+   ```
+
+2. Open `https://tools.eidox.io/sap-bin-parser/stats` and paste the token (it is in `.env`).
+   The page keeps it for that browser tab only.
+3. For Prometheus, scrape `/sap-bin-parser/metrics` with the token:
+
+   ```yaml
+   - job_name: sap-bin
+     scheme: https
+     metrics_path: /sap-bin-parser/metrics
+     authorization: { credentials: "<the token>" }
+     static_configs: [{ targets: ["tools.eidox.io"] }]
+   ```
+
+The totals are saved to the `usage` volume every minute and when the container stops, so
+they survive updates. `docker compose down -v` deletes them.
+
 To update, `docker compose pull && docker compose up -d`. Images are published to
 `ghcr.io/aerofeev/sap-bin-parser` for amd64 and arm64: `:latest` and `:0.2.0` on each
 release, `:main` on each merge.

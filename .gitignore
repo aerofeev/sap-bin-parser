@@ -35,3 +35,6 @@ DATA.*.TXT
 
 # Browser test tooling
 node_modules/
+
+# Deployment secrets
+.env

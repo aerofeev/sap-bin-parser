@@ -1,5 +1,6 @@
-// sap-bin web page. No framework, no build step, no third-party code:
-// what you read here is exactly what runs.
+// sap-bin web page. No framework and no third-party code: what you read
+// here is exactly what runs. (Only the stylesheet is built, from Tailwind
+// CSS in styles/app.css, and the result is committed as app.css.)
 //
 // Flow: choose an export (a .zip, an unzipped folder, or separate files) ->
 // send the first 4 MiB and last 256 KiB of its first file to api/inspect
@@ -27,6 +28,7 @@
     report: null,
     job: null,
     rows: [], // schema editor rows
+    inspected: null, // inspectOptions() of the latest inspection
   };
   const dataFile = () => state.files[0] || null;
   const multi = () => state.files.length > 1;
@@ -225,6 +227,11 @@
     $("file-meta").textContent = bytes(first ? total : state.schema.size);
   }
 
+  // The options an inspection depends on, to skip repeating one: a field's
+  // change event also fires when it loses focus, such as on a click on a
+  // suggested record size, which would otherwise re-inspect under the click.
+  const inspectOptions = () => `${$("record-size").value.trim()}|${$("text-encoding").value}`;
+
   async function inspect() {
     const target = dataFile() || state.schema;
     if (!target) return;
@@ -243,6 +250,7 @@
     const recordSize = $("record-size").value.trim();
     if (recordSize) form.append("record_size", recordSize);
     form.append("text_encoding", $("text-encoding").value);
+    state.inspected = inspectOptions();
 
     let report;
     try {
@@ -863,8 +871,9 @@
     });
     for (const input of document.querySelectorAll("#convert input, #convert select")) {
       input.addEventListener("change", () => {
-        if (input.id === "record-size" || input.id === "text-encoding") inspect();
-        else updateOutput();
+        if (input.id === "record-size" || input.id === "text-encoding") {
+          if (inspectOptions() !== state.inspected) inspect();
+        } else updateOutput();
       });
     }
 

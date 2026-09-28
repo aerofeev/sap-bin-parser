@@ -18,7 +18,8 @@ const port = 18000 + Math.floor(Math.random() * 2000);
 const basePath = (process.env.BASE_PATH || "").replace(/\/+$/, "");
 const base = `http://127.0.0.1:${port}${basePath}`;
 
-const serverArgs = ["serve", "--port", String(port)];
+const statsToken = "e2e-token-0123456789abcdefgh";
+const serverArgs = ["serve", "--port", String(port), "--stats-token", statsToken];
 if (basePath) serverArgs.push("--base-path", basePath);
 const server = spawn(binary, serverArgs, { stdio: ["ignore", "ignore", "pipe"] });
 let serverLog = "";
@@ -198,7 +199,8 @@ open(sys.argv[1] + "/big.BIN", "wb").write(data * 5)
   check((await page.textContent("#decode-error")).includes("usually means the record size is wrong"), "misalignment explained");
   await page.click("#probe button:has-text('Use 126 bytes')");
   await page.waitForSelector("#decode-error", { state: "hidden" });
-  check((await page.inputValue("#record-size")) === "126", "probe suggestion applied");
+  const applied = await page.inputValue("#record-size");
+  check(applied === "126", `probe suggestion applied (${JSON.stringify(applied)})`);
 
   // 5. Command-line equivalents follow the options.
   await page.click("summary:has-text('Do the same')");
@@ -221,6 +223,36 @@ open(sys.argv[1] + "/big.BIN", "wb").write(data * 5)
   await darkPage.click("#try-sample");
   await darkPage.waitForSelector("#summary:not([hidden])");
   await darkPage.screenshot({ path: join(outDir, "dark.png") });
+
+  // 8. Downloads are compressed on the wire, and saved decompressed.
+  const encoding = await page.evaluate(async () => {
+    const sample = await (await fetch("api/sample?records=2000&shards=1")).blob();
+    const response = await fetch("api/convert?format=csv", { method: "POST", body: sample });
+    const text = await response.text();
+    return { coding: response.headers.get("content-encoding"), lines: text.split("\r\n").length - 2 };
+  });
+  check(encoding.coding === "zstd" && encoding.lines === 2000, `CSV downloads are zstd-compressed (${JSON.stringify(encoding)})`);
+
+  // 9. The operator's usage dashboard.
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await page.goto(`${base}/stats`);
+  await page.fill("#token", "not-the-token-at-all-000000");
+  await page.click("#sign-in-form button[type=submit]");
+  await page.waitForSelector("#sign-in-error:not([hidden])");
+  check((await page.textContent("#sign-in-error")).includes("not right"), "stats: a wrong token is refused");
+  // The browser logs that refusal (a 401) as a failed load; it is expected.
+  const refusal = problems.findIndex((p) => p.includes("401"));
+  if (refusal >= 0) problems.splice(refusal, 1);
+  await page.fill("#token", statsToken);
+  await page.click("#sign-in-form button[type=submit]");
+  await page.waitForSelector("#dashboard:not([hidden])");
+  const records = Number((await page.textContent("#kpi-records")).replace(/\D/g, ""));
+  check(records > 1000000, `stats: the dashboard counts the records converted (${records})`);
+  check((await page.textContent("#tables")).includes("BSIS"), "stats: SAP tables are listed");
+  await page.screenshot({ path: join(outDir, "stats.png"), fullPage: true });
+  await page.reload();
+  await page.waitForSelector("#dashboard:not([hidden])");
+  check(true, "stats: the token lasts for the tab");
 
   check(problems.length === 0, `no console errors${problems.length ? `: ${problems.join(" | ")}` : ""}`);
   console.log("all browser checks passed");

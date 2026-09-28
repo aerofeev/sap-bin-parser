@@ -7,6 +7,12 @@
 //! in memory under a random id the browser chose, so the page can show
 //! progress, and dropped a few minutes after the conversion ends.
 //!
+//! The service also keeps running totals for its operator (see
+//! [`crate::usage`]): conversions, records and bytes by format, input, SAP
+//! table and day, never tied to a person or a file. They are private, served
+//! only with the operator's token, and written to disk only when a
+//! statistics file is configured.
+//!
 //! Endpoints:
 //!
 //! | | |
@@ -18,10 +24,12 @@
 //! | `POST /api/jobs/{id}/cancel` | stop it |
 //! | `GET /api/sample` | a synthetic export to try things with |
 //! | `GET /api/config`, `GET /healthz` | version and limits |
+//! | `GET /stats`, `GET /api/stats`, `GET /metrics` | usage statistics, with the operator's token |
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -46,6 +54,7 @@ use crate::convert::{
 use crate::decode::DecimalMode;
 use crate::error::Error;
 use crate::inspect::{inspect, Sample};
+use crate::usage::{Conversion, Failure, Usage};
 use crate::writer::Compression;
 use crate::zip::{Entries, EntryInfo};
 
@@ -53,10 +62,14 @@ const INDEX_HTML: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
 const APP_CSS: &str = include_str!("../web/app.css");
 const FAVICON: &str = include_str!("../web/favicon.svg");
+const STATS_HTML: &str = include_str!("../web/stats.html");
+const STATS_JS: &str = include_str!("../web/stats.js");
+const INTER_LATIN: &[u8] = include_bytes!("../web/fonts/inter-latin-wght-normal.woff2");
+const INTER_CYRILLIC: &[u8] = include_bytes!("../web/fonts/inter-cyrillic-wght-normal.woff2");
 
 /// The page's Content-Security-Policy: nothing from anywhere but here, and
 /// no connection to anywhere but here.
-const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
+const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; \
                    connect-src 'self'; form-action 'self'; frame-src 'self'; frame-ancestors 'self'; \
                    base-uri 'none'";
 
@@ -79,7 +92,16 @@ pub struct Config {
     /// that hosts several tools on one domain. Empty for the domain root.
     /// Normalise with [`normalise_base_path`].
     pub base_path: String,
+    /// Save the usage totals here, so they survive restarts. Without it they
+    /// are kept in memory only. Ignored in local mode.
+    pub stats_file: Option<PathBuf>,
+    /// The bearer token that unlocks the usage statistics. Without it, the
+    /// statistics routes do not exist.
+    pub stats_token: Option<String>,
 }
+
+/// The shortest statistics token accepted.
+pub const MIN_TOKEN_LEN: usize = 24;
 
 /// Normalise a base path: `sap-bin-parser/` and `/sap-bin-parser` both give
 /// `/sap-bin-parser`; `` and `/` give ``.
@@ -155,6 +177,7 @@ struct Transfer {
     output: Mutex<Option<Download>>,
     options: Options,
     multi: bool,
+    encoding: Encoding,
     limit: u64,
     uploaded: AtomicU64,
     last_activity: Mutex<Instant>,
@@ -197,6 +220,7 @@ struct AppState {
     config: Config,
     permits: Arc<Semaphore>,
     jobs: Mutex<HashMap<String, Arc<Job>>>,
+    usage: Arc<Usage>,
 }
 
 type Shared = Arc<AppState>;
@@ -210,6 +234,11 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 const CHUNK_BYTES: usize = 8 << 20;
 
 impl AppState {
+    /// Conversions in progress.
+    fn running(&self) -> usize {
+        self.config.max_concurrency.max(1) - self.permits.available_permits()
+    }
+
     fn register(
         &self,
         id: &str,
@@ -251,11 +280,32 @@ impl AppState {
 /// answer at the root, so the service works whether or not a reverse proxy
 /// strips the prefix.
 pub fn app(config: Config) -> Router {
+    let usage = Arc::new(open_usage(&config));
+    router(config, usage)
+}
+
+/// The usage totals for this configuration: from the statistics file if
+/// there is one, in memory otherwise.
+fn open_usage(config: &Config) -> Usage {
+    match config.stats_file.as_deref().filter(|_| !config.local) {
+        None => Usage::in_memory(),
+        Some(path) => {
+            let (usage, warning) = Usage::open(path);
+            if let Some(warning) = warning {
+                tracing::warn!("usage statistics: {warning}");
+            }
+            usage
+        }
+    }
+}
+
+fn router(config: Config, usage: Arc<Usage>) -> Router {
     let base = config.base_path.clone();
     let state = Arc::new(AppState {
         permits: Arc::new(Semaphore::new(config.max_concurrency.max(1))),
         jobs: Mutex::new(HashMap::new()),
         config,
+        usage,
     });
     let routes: Router<Shared> = Router::new()
         .route(
@@ -265,6 +315,14 @@ pub fn app(config: Config) -> Router {
         .route(
             "/assets/app.css",
             get(|| async { asset("text/css; charset=utf-8", APP_CSS) }),
+        )
+        .route(
+            "/fonts/inter-latin-wght-normal.woff2",
+            get(|| async { font(INTER_LATIN) }),
+        )
+        .route(
+            "/fonts/inter-cyrillic-wght-normal.woff2",
+            get(|| async { font(INTER_CYRILLIC) }),
         )
         .route(
             "/favicon.svg",
@@ -282,7 +340,11 @@ pub fn app(config: Config) -> Router {
         )
         .route("/api/jobs/{id}/download", get(job_download))
         .route("/api/jobs/{id}", get(job_status))
-        .route("/api/jobs/{id}/cancel", post(job_cancel));
+        .route("/api/jobs/{id}/cancel", post(job_cancel))
+        .route("/stats", get(stats_page))
+        .route("/assets/stats.js", get(stats_script))
+        .route("/api/stats", get(stats_json))
+        .route("/metrics", get(metrics));
 
     if tokio::runtime::Handle::try_current().is_ok() {
         tokio::spawn(reap_idle_jobs(state.clone()));
@@ -331,14 +393,76 @@ pub async fn serve(config: Config) -> io::Result<()> {
     if config.open_browser && webbrowser::open(&url).is_err() {
         eprintln!("Open {url} in your browser.");
     }
-    axum::serve(
+    let usage = Arc::new(open_usage(&config));
+    if !config.local {
+        match (&config.stats_token, usage.is_saved()) {
+            (None, _) => {}
+            (Some(_), true) => eprintln!(
+                "Usage statistics at {url}stats, saved to {}",
+                config
+                    .stats_file
+                    .as_deref()
+                    .unwrap_or_else(|| std::path::Path::new(""))
+                    .display()
+            ),
+            (Some(_), false) => eprintln!("Usage statistics at {url}stats, kept in memory"),
+        }
+    }
+    if usage.is_saved() {
+        tokio::spawn(save_usage_every_minute(usage.clone()));
+    }
+    let on_signal = usage.clone();
+    let result = axum::serve(
         listener,
-        app(config).into_make_service_with_connect_info::<SocketAddr>(),
+        router(config, usage.clone()).into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(async {
-        let _ = tokio::signal::ctrl_c().await;
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        // Save straight away: open downloads may keep the server alive past
+        // the grace period a container runtime allows.
+        save_usage(on_signal).await;
     })
-    .await
+    .await;
+    save_usage(usage).await;
+    result
+}
+
+/// Ctrl+C, or SIGTERM from a container runtime or service manager.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+async fn save_usage(usage: Arc<Usage>) {
+    if let Ok(Err(e)) = tokio::task::spawn_blocking(move || usage.save()).await {
+        tracing::warn!("could not save usage statistics: {e}");
+    }
+}
+
+async fn save_usage_every_minute(usage: Arc<Usage>) {
+    let mut tick = tokio::time::interval(Duration::from_secs(60));
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+        save_usage(usage.clone()).await;
+    }
 }
 
 fn asset(content_type: &'static str, body: &'static str) -> Response {
@@ -352,7 +476,21 @@ fn asset(content_type: &'static str, body: &'static str) -> Response {
         .into_response()
 }
 
-async fn index() -> Response {
+/// The page's typeface (Inter, SIL Open Font License), served from the
+/// binary like everything else.
+fn font(body: &'static [u8]) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "font/woff2"),
+            (header::CACHE_CONTROL, "public, max-age=604800"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+async fn index(State(state): State<Shared>) -> Response {
+    state.usage.page_view();
     asset("text/html; charset=utf-8", INDEX_HTML)
 }
 
@@ -375,7 +513,8 @@ struct SampleParams {
     shards: Option<usize>,
 }
 
-async fn sample(Query(params): Query<SampleParams>) -> Response {
+async fn sample(State(state): State<Shared>, Query(params): Query<SampleParams>) -> Response {
+    state.usage.sample();
     let records = params.records.unwrap_or(5_000).clamp(1, 200_000);
     let shards = params.shards.unwrap_or(2).clamp(1, 8);
     let bytes = tokio::task::spawn_blocking(move || crate::sample::sample_archive(records, shards))
@@ -668,19 +807,138 @@ impl Entries for ChannelReader {
 }
 
 /// Blocking writer into the response body, in 256 KiB chunks.
+/// How a download is compressed on the wire (`Content-Encoding`). Over the
+/// internet a conversion is limited by the network rather than the engine,
+/// and CSV shrinks several times over, so compressing makes it that much
+/// faster. Browsers decompress as they save: the file on disk is the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Encoding {
+    Identity,
+    Gzip,
+    Zstd,
+}
+
+impl Encoding {
+    /// The best encoding the request accepts, when the output is worth
+    /// compressing: text formats (Parquet is compressed already, and so is a
+    /// zip of shards), and not on the user's own machine, where it would only
+    /// cost time.
+    fn choose(config: &Config, options: &Options, headers: &HeaderMap) -> Self {
+        if config.local || options.split || options.format == Format::Parquet {
+            return Encoding::Identity;
+        }
+        [Encoding::Zstd, Encoding::Gzip]
+            .into_iter()
+            .find(|e| e.accepted(headers))
+            .unwrap_or(Encoding::Identity)
+    }
+
+    /// Whether the request's `Accept-Encoding` allows this encoding.
+    fn accepted(self, headers: &HeaderMap) -> bool {
+        let Some(name) = self.header() else {
+            return true;
+        };
+        headers
+            .get_all(header::ACCEPT_ENCODING)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .any(|item| {
+                let mut parts = item.split(';').map(str::trim);
+                let coding = parts.next().unwrap_or("");
+                let refused = parts.any(|p| {
+                    p.strip_prefix("q=")
+                        .and_then(|q| q.parse::<f32>().ok())
+                        .is_some_and(|q| q <= 0.0)
+                });
+                coding.eq_ignore_ascii_case(name) && !refused
+            })
+    }
+
+    fn header(self) -> Option<&'static str> {
+        match self {
+            Encoding::Identity => None,
+            Encoding::Gzip => Some("gzip"),
+            Encoding::Zstd => Some("zstd"),
+        }
+    }
+}
+
+enum Encoder {
+    Identity,
+    Gzip(flate2::write::GzEncoder<Vec<u8>>),
+    Zstd(zstd::stream::write::Encoder<'static, Vec<u8>>),
+}
+
+impl Encoder {
+    fn new(encoding: Encoding) -> Self {
+        match encoding {
+            Encoding::Identity => Encoder::Identity,
+            // The fastest levels: they still shrink CSV several times over,
+            // and keep compression well ahead of any network.
+            Encoding::Gzip => Encoder::Gzip(flate2::write::GzEncoder::new(
+                Vec::new(),
+                flate2::Compression::fast(),
+            )),
+            Encoding::Zstd => match zstd::stream::write::Encoder::new(Vec::new(), 1) {
+                Ok(encoder) => Encoder::Zstd(encoder),
+                Err(_) => Encoder::Identity,
+            },
+        }
+    }
+}
+
+/// Blocking writer into the response body, in 256 KiB chunks, compressed
+/// if the client asked for it.
 struct ChannelWriter {
     tx: mpsc::Sender<io::Result<Bytes>>,
     buffer: Vec<u8>,
+    encoder: Encoder,
+    finished: bool,
+    sent: Arc<AtomicU64>,
 }
 
 const OUT_CHUNK: usize = 256 * 1024;
 
 impl ChannelWriter {
-    fn send(&mut self) -> io::Result<()> {
-        if self.buffer.is_empty() {
+    fn new(tx: mpsc::Sender<io::Result<Bytes>>, encoding: Encoding, sent: Arc<AtomicU64>) -> Self {
+        Self {
+            tx,
+            buffer: Vec::with_capacity(OUT_CHUNK),
+            encoder: Encoder::new(encoding),
+            finished: false,
+            sent,
+        }
+    }
+
+    /// Send what is buffered; with `finish`, end the compressed stream.
+    fn send(&mut self, finish: bool) -> io::Result<()> {
+        if self.finished || (self.buffer.is_empty() && !finish) {
             return Ok(());
         }
-        let chunk = std::mem::replace(&mut self.buffer, Vec::with_capacity(OUT_CHUNK));
+        let raw = std::mem::replace(&mut self.buffer, Vec::with_capacity(OUT_CHUNK));
+        let chunk = match &mut self.encoder {
+            Encoder::Identity => raw,
+            Encoder::Gzip(encoder) => {
+                encoder.write_all(&raw)?;
+                if finish {
+                    encoder.try_finish()?;
+                }
+                std::mem::take(encoder.get_mut())
+            }
+            Encoder::Zstd(encoder) => {
+                encoder.write_all(&raw)?;
+                if finish {
+                    encoder.do_finish()?;
+                }
+                std::mem::take(encoder.get_mut())
+            }
+        };
+        self.finished = finish;
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        self.sent.fetch_add(chunk.len() as u64, Ordering::Relaxed);
         self.tx
             .blocking_send(Ok(Bytes::from(chunk)))
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "the client went away"))
@@ -691,13 +949,23 @@ impl Write for ChannelWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.buffer.extend_from_slice(buf);
         if self.buffer.len() >= OUT_CHUNK {
-            self.send()?;
+            self.send(false)?;
         }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.send()
+        self.send(false)
+    }
+}
+
+impl Drop for ChannelWriter {
+    /// The end of the output: the pipeline drops its writer when it is done
+    /// (on its blocking thread), which ends the compressed stream. After a
+    /// failure the response is aborted anyway, so a truncated stream is never
+    /// mistaken for a complete one.
+    fn drop(&mut self) {
+        let _ = self.send(true);
     }
 }
 
@@ -889,6 +1157,7 @@ async fn convert_upload(
         .as_deref()
         .and_then(|id| state.register(id, Arc::new(Progress::new()), None));
     let Ok(permit) = state.permits.clone().try_acquire_owned() else {
+        state.usage.failure(Failure::Busy);
         let message = BUSY;
         if let Some(job) = &job {
             job.finish(JobState::Failed {
@@ -906,6 +1175,7 @@ async fn convert_upload(
     let mut options = match params.options(state.config.threads_per_job()) {
         Ok(options) => options,
         Err(message) => {
+            state.usage.failure(Failure::Input);
             if let Some(job) = &job {
                 job.finish(JobState::Failed {
                     error: message.clone(),
@@ -920,6 +1190,7 @@ async fn convert_upload(
         .as_ref()
         .map_or_else(|| Arc::new(Progress::new()), |j| j.progress.clone());
     let fail = |job: &Option<Arc<Job>>, error: &Error| {
+        state.usage.failure(failure_kind(error));
         if let Some(job) = job {
             job.finish(JobState::failed(error));
         }
@@ -978,8 +1249,9 @@ async fn convert_upload(
         options.input_kind = InputKind::Auto;
     }
 
-    let (out_rx, ready_rx, handle) =
-        start_pipeline(options.clone(), progress, multi, permit, in_rx);
+    let encoding = Encoding::choose(&state.config, &options, &headers);
+    let tally = Tally::new(&options, multi, "api", encoding, progress);
+    let (out_rx, ready_rx, handle) = start_pipeline(options.clone(), &tally, multi, permit, in_rx);
 
     let meta = match ready_rx.await {
         Ok(meta) => meta,
@@ -993,8 +1265,8 @@ async fn convert_upload(
         }
     };
 
-    tokio::spawn(record_outcome(job, handle));
-    download_response(&meta, &options, out_rx)
+    tokio::spawn(record_outcome(state.clone(), job, handle, tally));
+    download_response(&meta, &options, encoding, out_rx)
 }
 
 const BUSY: &str =
@@ -1002,12 +1274,54 @@ const BUSY: &str =
 
 type Outcome = tokio::task::JoinHandle<crate::Result<Stats>>;
 
+/// What the usage statistics record about a conversion, besides its
+/// [`Stats`]: never a name, a field or a value.
+struct Tally {
+    format: &'static str,
+    input: &'static str,
+    client: &'static str,
+    encoding: Encoding,
+    progress: Arc<Progress>,
+    bytes_out: Arc<AtomicU64>,
+}
+
+impl Tally {
+    fn new(
+        options: &Options,
+        multi: bool,
+        client: &'static str,
+        encoding: Encoding,
+        progress: Arc<Progress>,
+    ) -> Self {
+        let format = match options.format {
+            Format::Csv if options.bom => "excel",
+            format => format.extension(),
+        };
+        Self {
+            format,
+            input: if multi { "files" } else { "archive" },
+            client,
+            encoding,
+            progress,
+            bytes_out: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+/// How a failed conversion counts in the usage statistics.
+fn failure_kind(error: &Error) -> Failure {
+    match error {
+        Error::Io(e) if e.kind() == io::ErrorKind::BrokenPipe => Failure::Cancelled,
+        other => Failure::from_status(error_status(other).as_u16()),
+    }
+}
+
 /// Start a conversion on the blocking pool, reading pieces from `input`.
 /// Returns the output stream, the readiness signal (sent once the first
 /// block has decoded) and the conversion's outcome.
 fn start_pipeline(
     options: Options,
-    progress: Arc<Progress>,
+    tally: &Tally,
     multi: bool,
     permit: tokio::sync::OwnedSemaphorePermit,
     input: mpsc::Receiver<PieceResult>,
@@ -1018,6 +1332,9 @@ fn start_pipeline(
 ) {
     let (out_tx, out_rx) = mpsc::channel::<io::Result<Bytes>>(8);
     let (ready_tx, ready_rx) = oneshot::channel::<Meta>();
+    let progress = tally.progress.clone();
+    let sent = tally.bytes_out.clone();
+    let encoding = tally.encoding;
     let handle = tokio::task::spawn_blocking(move || {
         let reader = ChannelReader::new(input, progress.clone(), multi);
         let input = if multi {
@@ -1025,10 +1342,7 @@ fn start_pipeline(
         } else {
             Input::Reader(Box::new(reader))
         };
-        let writer = ChannelWriter {
-            tx: out_tx.clone(),
-            buffer: Vec::with_capacity(OUT_CHUNK),
-        };
+        let writer = ChannelWriter::new(out_tx.clone(), encoding, sent);
         let result = convert(
             input,
             Output::Writer(Box::new(writer)),
@@ -1048,9 +1362,25 @@ fn start_pipeline(
     (out_rx, ready_rx, handle)
 }
 
-/// Record a conversion's outcome on its job, for the page's progress poll.
-async fn record_outcome(job: Option<Arc<Job>>, handle: Outcome) {
+/// Record a conversion's outcome on its job, for the page's progress poll,
+/// and in the usage statistics.
+async fn record_outcome(state: Shared, job: Option<Arc<Job>>, handle: Outcome, tally: Tally) {
     let outcome = handle.await;
+    match &outcome {
+        Ok(Ok(stats)) => state.usage.conversion(&Conversion {
+            format: tally.format,
+            input: tally.input,
+            client: tally.client,
+            table: &stats.table,
+            records: stats.records,
+            shards: stats.shards,
+            bytes_in: tally.progress.bytes_in.load(Ordering::Relaxed),
+            bytes_out: tally.bytes_out.load(Ordering::Relaxed),
+            seconds: stats.elapsed.as_secs_f64(),
+        }),
+        Ok(Err(error)) => state.usage.failure(failure_kind(error)),
+        Err(_) => state.usage.failure(Failure::Server),
+    }
     if let Some(job) = job {
         job.finish(match outcome {
             Ok(Ok(stats)) => done_state(&stats),
@@ -1068,6 +1398,7 @@ async fn record_outcome(job: Option<Arc<Job>>, handle: Outcome) {
 fn download_response(
     meta: &Meta,
     options: &Options,
+    encoding: Encoding,
     output: mpsc::Receiver<io::Result<Bytes>>,
 ) -> Response {
     let filename = attachment_name(meta, options);
@@ -1076,8 +1407,13 @@ fn download_response(
     } else {
         options.format.content_type()
     };
-    Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
+        .header(header::VARY, "accept-encoding");
+    if let Some(coding) = encoding.header() {
+        builder = builder.header(header::CONTENT_ENCODING, coding);
+    }
+    builder
         .header(header::CONTENT_TYPE, content_type)
         .header(
             header::CONTENT_DISPOSITION,
@@ -1125,6 +1461,7 @@ async fn failure_of(job: &Job) -> Response {
 async fn create_job(
     State(state): State<Shared>,
     Query(params): Query<ConvertParams>,
+    headers: HeaderMap,
     schema: Bytes,
 ) -> Response {
     let Some(id) = params.job.clone() else {
@@ -1136,15 +1473,22 @@ async fn create_job(
     };
     let mut options = match params.options(state.config.threads_per_job()) {
         Ok(options) => options,
-        Err(message) => return problem(StatusCode::BAD_REQUEST, &message, None),
+        Err(message) => {
+            state.usage.failure(Failure::Input);
+            return problem(StatusCode::BAD_REQUEST, &message, None);
+        }
     };
     if !schema.is_empty() {
         match schema_from_bytes(&schema, None) {
             Ok(parsed) => options.schema = Some(parsed),
-            Err(error) => return error_response(&error),
+            Err(error) => {
+                state.usage.failure(Failure::Input);
+                return error_response(&error);
+            }
         }
     }
     let Ok(permit) = state.permits.clone().try_acquire_owned() else {
+        state.usage.failure(Failure::Busy);
         let mut response = problem(StatusCode::SERVICE_UNAVAILABLE, BUSY, None);
         response
             .headers_mut()
@@ -1154,13 +1498,17 @@ async fn create_job(
     let multi = params.multi.unwrap_or(false);
     let (in_tx, in_rx) = mpsc::channel(4);
     let progress = Arc::new(Progress::new());
-    let (output, ready, handle) =
-        start_pipeline(options.clone(), progress.clone(), multi, permit, in_rx);
+    // Chosen now, from this request: the pipeline starts before the download
+    // is requested. Both come from the same browser; the download checks.
+    let encoding = Encoding::choose(&state.config, &options, &headers);
+    let tally = Tally::new(&options, multi, "page", encoding, progress.clone());
+    let (output, ready, handle) = start_pipeline(options.clone(), &tally, multi, permit, in_rx);
     let transfer = Transfer {
         input: tokio::sync::Mutex::new(Some(in_tx)),
         output: Mutex::new(Some((output, ready))),
         options,
         multi,
+        encoding,
         limit: if state.config.local {
             0
         } else {
@@ -1178,7 +1526,7 @@ async fn create_job(
             None,
         );
     };
-    tokio::spawn(record_outcome(Some(job), handle));
+    tokio::spawn(record_outcome(state.clone(), Some(job), handle, tally));
     (
         StatusCode::CREATED,
         Json(json!({ "id": id, "chunk_bytes": CHUNK_BYTES })),
@@ -1257,7 +1605,11 @@ async fn job_input(
 }
 
 /// `GET api/jobs/{id}/download`: the converted output, streamed.
-async fn job_download(State(state): State<Shared>, Path(id): Path<String>) -> Response {
+async fn job_download(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
     let Some(job) = job_of(&state, &id) else {
         return problem(StatusCode::NOT_FOUND, "no such job", None);
     };
@@ -1268,6 +1620,15 @@ async fn job_download(State(state): State<Shared>, Path(id): Path<String>) -> Re
             None,
         );
     };
+    let expected = transfer.encoding;
+    if !expected.accepted(&headers) {
+        job.abort_input("the download did not accept the job's compression");
+        return problem(
+            StatusCode::NOT_ACCEPTABLE,
+            "this download is compressed, but the request does not accept compression",
+            Some("send the same Accept-Encoding when creating the job and downloading it"),
+        );
+    }
     let Some((output, ready)) = transfer.output.lock().unwrap().take() else {
         return problem(
             StatusCode::CONFLICT,
@@ -1277,7 +1638,7 @@ async fn job_download(State(state): State<Shared>, Path(id): Path<String>) -> Re
     };
     transfer.download_connected.store(true, Ordering::Relaxed);
     match ready.await {
-        Ok(meta) => download_response(&meta, &transfer.options, output),
+        Ok(meta) => download_response(&meta, &transfer.options, expected, output),
         Err(_) => failure_of(&job).await,
     }
 }
@@ -1378,7 +1739,7 @@ async fn job_cancel(State(state): State<Shared>, Path(id): Path<String>) -> Resp
 
 /// `/api/inspect`: multipart with `head` (required), and optionally `tail`,
 /// `size`, `schema`, `name`, `record_size`, `text_encoding`.
-async fn inspect_upload(headers: HeaderMap, body: Body) -> Response {
+async fn inspect_upload(State(state): State<Shared>, headers: HeaderMap, body: Body) -> Response {
     let Some(boundary) = boundary_of(&headers) else {
         return problem(
             StatusCode::BAD_REQUEST,
@@ -1449,7 +1810,10 @@ async fn inspect_upload(headers: HeaderMap, body: Body) -> Response {
     })
     .await;
     match report {
-        Ok(Ok(report)) => Json(report).into_response(),
+        Ok(Ok(report)) => {
+            state.usage.inspection();
+            Json(report).into_response()
+        }
         Ok(Err(error)) => error_response(&error),
         Err(_) => problem(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1457,6 +1821,81 @@ async fn inspect_upload(headers: HeaderMap, body: Body) -> Response {
             None,
         ),
     }
+}
+
+/// The refusal for a statistics request without the operator's token.
+/// Without a token configured the statistics routes do not exist (404); a
+/// missing or wrong token gets 401.
+fn refuse_stats(config: &Config, headers: &HeaderMap) -> Option<Response> {
+    let Some(token) = config.stats_token.as_deref() else {
+        return Some(StatusCode::NOT_FOUND.into_response());
+    };
+    let given = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    if same_secret(given.trim().as_bytes(), token.as_bytes()) {
+        None
+    } else {
+        let mut response = problem(StatusCode::UNAUTHORIZED, "unauthorized", None);
+        response
+            .headers_mut()
+            .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        Some(response)
+    }
+}
+
+/// Compare secrets in time that depends only on their length.
+fn same_secret(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// `GET stats`: the operator's dashboard. The page itself holds no numbers;
+/// it asks for the token and reads `api/stats`.
+async fn stats_page(State(state): State<Shared>) -> Response {
+    if state.config.stats_token.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    asset("text/html; charset=utf-8", STATS_HTML)
+}
+
+async fn stats_script(State(state): State<Shared>) -> Response {
+    if state.config.stats_token.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    asset("text/javascript; charset=utf-8", STATS_JS)
+}
+
+/// `GET api/stats`: every total, as JSON.
+async fn stats_json(State(state): State<Shared>, headers: HeaderMap) -> Response {
+    if let Some(response) = refuse_stats(&state.config, &headers) {
+        return response;
+    }
+    let mut body = serde_json::to_value(state.usage.snapshot()).unwrap_or_default();
+    if let Some(object) = body.as_object_mut() {
+        object.insert("service_version".into(), json!(crate::VERSION));
+        object.insert("today".into(), json!(crate::usage::today()));
+        object.insert("uptime_seconds".into(), json!(state.usage.uptime_seconds()));
+        object.insert("running".into(), json!(state.running()));
+        object.insert("saved".into(), json!(state.usage.is_saved()));
+    }
+    Json(body).into_response()
+}
+
+/// `GET metrics`: the totals for Prometheus.
+async fn metrics(State(state): State<Shared>, headers: HeaderMap) -> Response {
+    if let Some(response) = refuse_stats(&state.config, &headers) {
+        return response;
+    }
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        state.usage.prometheus(state.running()),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -1474,6 +1913,8 @@ mod tests {
             threads: 1,
             open_browser: false,
             base_path: normalise_base_path(base).unwrap(),
+            stats_file: None,
+            stats_token: None,
         }
     }
 
@@ -1531,6 +1972,153 @@ mod tests {
             assert_eq!(get(&app, path).await.0, StatusCode::OK, "{path}");
         }
         assert_eq!(get(&app, "/elsewhere/").await.0, StatusCode::NOT_FOUND);
+    }
+
+    const TOKEN: &str = "test-token-0123456789abcdef";
+
+    async fn send(app: &Router, request: HttpRequest<Body>) -> (StatusCode, Bytes) {
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, body)
+    }
+
+    fn stats_request(path: &str, token: Option<&str>) -> HttpRequest<Body> {
+        let mut request = HttpRequest::builder()
+            .uri(path)
+            .header(header::HOST, "tools.example.com");
+        if let Some(token) = token {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        request.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn statistics_do_not_exist_without_a_token() {
+        let app = app(config(""));
+        for path in ["/stats", "/assets/stats.js", "/api/stats", "/metrics"] {
+            let (status, _) = send(&app, stats_request(path, Some(TOKEN))).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn statistics_need_the_token_and_count_conversions() {
+        let app = app(Config {
+            stats_token: Some(TOKEN.into()),
+            ..config("/sap-bin-parser")
+        });
+        for path in ["/sap-bin-parser/api/stats", "/metrics"] {
+            assert_eq!(
+                send(&app, stats_request(path, None)).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+            assert_eq!(
+                send(
+                    &app,
+                    stats_request(path, Some("test-token-0123456789abcdeX"))
+                )
+                .await
+                .0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        // The dashboard shell holds no numbers, so it loads without the token.
+        assert_eq!(
+            send(&app, stats_request("/sap-bin-parser/stats", None))
+                .await
+                .0,
+            StatusCode::OK
+        );
+
+        let archive = crate::sample::sample_archive(1234, 1);
+        let convert = HttpRequest::builder()
+            .method(Method::POST)
+            .uri("/sap-bin-parser/api/convert?format=csv&bom=true")
+            .header(header::HOST, "tools.example.com")
+            .body(Body::from(archive))
+            .unwrap();
+        let (status, csv) = send(&app, convert).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let mut stats = serde_json::Value::Null;
+        for _ in 0..100 {
+            let (status, body) = send(
+                &app,
+                stats_request("/sap-bin-parser/api/stats", Some(TOKEN)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            stats = serde_json::from_slice(&body).unwrap();
+            if stats["totals"]["conversions"] == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(stats["totals"]["conversions"], 1);
+        assert_eq!(stats["totals"]["records"], 1234);
+        assert_eq!(stats["totals"]["bytes_out"], csv.len() as u64);
+        assert_eq!(stats["formats"]["excel"]["records"], 1234);
+        assert_eq!(stats["clients"]["api"]["conversions"], 1);
+        assert_eq!(stats["inputs"]["archive"]["conversions"], 1);
+        assert_eq!(stats["tables"]["BSIS"]["records"], 1234);
+        assert_eq!(stats["saved"], false);
+
+        let (status, text) = send(&app, stats_request("/metrics", Some(TOKEN))).await;
+        assert_eq!(status, StatusCode::OK);
+        let text = String::from_utf8(text.to_vec()).unwrap();
+        assert!(text.contains("sapbin_records_total 1234\n"), "{text}");
+    }
+
+    #[test]
+    fn compresses_text_downloads_when_the_client_accepts_it() {
+        let accept = |value: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::ACCEPT_ENCODING,
+                HeaderValue::from_str(value).unwrap(),
+            );
+            headers
+        };
+        let server = config("");
+        let csv = Options::default();
+        let choose = |config: &Config, options: &Options, value: &str| {
+            Encoding::choose(config, options, &accept(value))
+        };
+        assert_eq!(
+            choose(&server, &csv, "gzip, deflate, br, zstd"),
+            Encoding::Zstd
+        );
+        assert_eq!(choose(&server, &csv, "gzip, deflate, br"), Encoding::Gzip);
+        assert_eq!(
+            choose(&server, &csv, "zstd;q=0, GZIP;q=0.5"),
+            Encoding::Gzip
+        );
+        assert_eq!(choose(&server, &csv, "identity"), Encoding::Identity);
+        assert_eq!(
+            Encoding::choose(&server, &csv, &HeaderMap::new()),
+            Encoding::Identity
+        );
+        let parquet = Options {
+            format: Format::Parquet,
+            ..Options::default()
+        };
+        assert_eq!(choose(&server, &parquet, "zstd"), Encoding::Identity);
+        let split = Options {
+            split: true,
+            ..Options::default()
+        };
+        assert_eq!(choose(&server, &split, "zstd"), Encoding::Identity);
+        let local = Config {
+            local: true,
+            ..config("")
+        };
+        assert_eq!(choose(&local, &csv, "zstd"), Encoding::Identity);
+        assert!(Encoding::Zstd.accepted(&accept("br, zstd")));
+        assert!(!Encoding::Zstd.accepted(&accept("gzip")));
+        assert!(Encoding::Identity.accepted(&HeaderMap::new()));
     }
 
     #[tokio::test]

@@ -114,7 +114,18 @@ jobs:
           npm install --no-audit --no-fund
           npx playwright install --with-deps chromium
       - name: Check the page's JavaScript parses
-        run: node --check rust/web/app.js
+        run: |
+          node --check rust/web/app.js
+          node --check rust/web/stats.js
+      - name: Check the compiled stylesheet is up to date
+        working-directory: rust/web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build:css
+          git diff --exit-code -- app.css || {
+            echo "::error::rust/web/app.css is stale: run 'npm run build:css' in rust/web and commit it"
+            exit 1
+          }
       - name: Run at the domain root
         run: node rust/web/tests/e2e.mjs target/release/sap-bin target/e2e
       - name: Run under a path prefix, as at tools.eidox.io/sap-bin-parser/
@@ -131,7 +142,8 @@ jobs:
             target/e2e-prefixed/*.png
 
   stores-nothing:
-    # Prove the service never writes to disk: trace its file system calls.
+    # Prove the service never writes to disk, and with usage statistics on,
+    # writes only its statistics file: trace its file system calls.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -154,4 +166,21 @@ jobs:
           curl -fsS 'localhost:8080/api/sample?records=10000&shards=2' -o sample.zip
           curl -fsS --data-binary @sample.zip 'localhost:8080/api/convert?format=csv' -o out.csv
           test "$(wc -l < out.csv)" -eq 20001
+          docker stop sap-bin
+      - name: Keep usage statistics on a volume, with the rest read-only
+        run: |
+          token=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+          docker volume create usage
+          docker run -d --rm --read-only --cap-drop ALL -p 8080:8080 -v usage:/data \
+            -e SAPBIN_STATS_FILE=/data/usage.json -e SAPBIN_STATS_TOKEN="$token" --name sap-bin sap-bin:ci
+          for i in $(seq 30); do curl -fsS localhost:8080/healthz && break; sleep 1; done
+          curl -fsS --data-binary @sample.zip 'localhost:8080/api/convert?format=csv' -o /dev/null
+          sleep 1
+          curl -fsS -H "Authorization: Bearer $token" localhost:8080/api/stats | grep -q '"records":20000'
+          # docker stop sends SIGTERM: the totals are saved on the way out.
+          docker stop sap-bin
+          docker run -d --rm --read-only --cap-drop ALL -p 8080:8080 -v usage:/data \
+            -e SAPBIN_STATS_FILE=/data/usage.json -e SAPBIN_STATS_TOKEN="$token" --name sap-bin sap-bin:ci
+          for i in $(seq 30); do curl -fsS localhost:8080/healthz && break; sleep 1; done
+          curl -fsS -H "Authorization: Bearer $token" localhost:8080/api/stats | grep -q '"records":20000'
           docker stop sap-bin
