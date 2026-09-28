@@ -21,6 +21,7 @@ rules goes into both, with a case in `tests/test_cross_implementation.py`.
 | `tests/` | Python tests, including the cross-implementation suite |
 | `rust/web/tests/` | Browser end-to-end test (Playwright) |
 | `scripts/` | `compare.py` for real exports, `prove-stores-nothing.sh` |
+| `docs/` | The user documentation linked from the README; keep the navigation line at the top of each page in step |
 
 ## Checks
 
