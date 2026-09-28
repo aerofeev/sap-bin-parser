@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>sap-bin usage</title>
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/app.css">
+  <script src="assets/stats.js" defer></script>
+</head>
+<body>
+  <header class="sticky top-0 z-10 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+    <div class="shell flex h-14 items-center gap-3">
+      <a class="flex items-center gap-2.5 font-semibold tracking-tight text-foreground no-underline" href="./">
+        <span class="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
+          <svg class="size-4 fill-none stroke-current stroke-2" viewBox="0 0 24 24" aria-hidden="true" stroke-linecap="round"><path d="M4 6h6M4 12h10M4 18h8M15 6h5M17 12h3M15 18h5"/></svg>
+        </span>
+        <span>sap-bin</span>
+      </a>
+      <span class="badge">Usage</span>
+      <div class="ml-auto flex items-center gap-2">
+        <span id="updated" class="text-xs text-muted-foreground max-sm:hidden"></span>
+        <button id="refresh" class="button small" type="button" hidden>Refresh</button>
+        <button id="sign-out" class="button ghost small" type="button" hidden>Sign out</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell py-8">
+    <section id="sign-in" class="mx-auto mt-10 max-w-sm" hidden>
+      <form id="sign-in-form" class="card">
+        <h1 class="mb-1 text-xl">Usage statistics</h1>
+        <p class="muted mt-0 mb-5 text-sm">For the operator of this service. Enter the statistics token it was started with.</p>
+        <label class="flex flex-col gap-1.5 text-sm font-medium" for="token">Token
+          <input id="token" type="password" autocomplete="current-password" spellcheck="false" required>
+        </label>
+        <p id="sign-in-error" class="mt-2 mb-0 text-sm text-destructive" hidden></p>
+        <button class="button primary mt-5 w-full" type="submit">Show statistics</button>
+      </form>
+    </section>
+
+    <div id="dashboard" hidden>
+      <div class="mb-6 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 class="text-2xl">Usage</h1>
+          <p id="since" class="muted m-0 text-sm"></p>
+        </div>
+        <div id="running" class="badge"></div>
+      </div>
+
+      <section class="kpis" aria-label="Totals">
+        <div class="kpi"><div class="kpi-label">Records converted</div><div id="kpi-records" class="kpi-value"></div><div id="kpi-records-note" class="kpi-note"></div></div>
+        <div class="kpi"><div class="kpi-label">Conversions</div><div id="kpi-conversions" class="kpi-value"></div><div id="kpi-conversions-note" class="kpi-note"></div></div>
+        <div class="kpi"><div class="kpi-label">Data converted</div><div id="kpi-bytes" class="kpi-value"></div><div id="kpi-bytes-note" class="kpi-note"></div></div>
+        <div class="kpi"><div class="kpi-label">Success rate</div><div id="kpi-success" class="kpi-value"></div><div id="kpi-success-note" class="kpi-note"></div></div>
+      </section>
+
+      <section class="card mt-4">
+        <div class="mb-4 flex flex-wrap items-baseline justify-between gap-3">
+          <h2 class="m-0">Last 30 days</h2>
+          <div class="tab-list m-0" role="tablist" aria-label="Chart">
+            <button role="tab" id="chart-records" aria-selected="true" type="button">Records</button>
+            <button role="tab" id="chart-conversions" aria-selected="false" type="button">Conversions</button>
+            <button role="tab" id="chart-views" aria-selected="false" type="button">Page views</button>
+          </div>
+        </div>
+        <svg id="chart" class="chart" role="img" aria-label="Daily totals, last 30 days"></svg>
+      </section>
+
+      <div class="grid gap-4 lg:grid-cols-2">
+        <section class="card m-0">
+          <h2>Output formats</h2>
+          <div id="formats" class="space-y-3"></div>
+        </section>
+        <section class="card m-0">
+          <h2>How exports arrive</h2>
+          <div id="inputs" class="space-y-3"></div>
+          <h2 class="mt-6">Clients</h2>
+          <div id="clients" class="space-y-3"></div>
+        </section>
+      </div>
+
+      <section class="card mt-4">
+        <h2>SAP tables</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Table</th><th class="num">Conversions</th><th class="num">Records</th><th class="num">Share of records</th></tr></thead>
+            <tbody id="tables"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Service</h2>
+        <div id="service" class="stats m-0"></div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="border-t bg-background">
+    <div class="shell flex flex-wrap items-center justify-between gap-3 py-6 text-sm text-muted-foreground">
+      <span>sap-bin <span id="version"></span> · totals only, never a person, an address or a file</span>
+      <a class="maker" href="https://eidox.io" rel="noopener">made by eidox ai</a>
+    </div>
+  </footer>
+</body>
+</html>

@@ -120,6 +120,16 @@ struct ServeArgs {
     /// https://tools.example.com/sap-bin-parser/ behind a reverse proxy.
     #[arg(long, default_value = "", env = "SAPBIN_BASE_PATH")]
     base_path: String,
+    /// Keep the usage statistics in this file, so they survive restarts
+    /// (default: in memory only). Aggregate totals only, never a file name,
+    /// a value or an address.
+    #[arg(long, env = "SAPBIN_STATS_FILE")]
+    stats_file: Option<PathBuf>,
+    /// Token that unlocks the usage statistics at /stats, /api/stats and
+    /// /metrics (send it as "Authorization: Bearer ..."). Without it, those
+    /// routes do not exist.
+    #[arg(long, env = "SAPBIN_STATS_TOKEN", hide_env_values = true)]
+    stats_token: Option<String>,
 }
 
 #[derive(Args)]
@@ -292,6 +302,8 @@ fn run_app(args: AppArgs) -> sap_bin::Result<i32> {
         threads: 0,
         open_browser: !args.no_open,
         base_path: String::new(),
+        stats_file: None,
+        stats_token: None,
     };
     runtime()?.block_on(server::serve(config))?;
     Ok(0)
@@ -307,7 +319,19 @@ fn run_serve(args: ServeArgs) -> sap_bin::Result<i32> {
         threads: args.threads,
         open_browser: false,
         base_path: server::normalise_base_path(&args.base_path).map_err(Error::Schema)?,
+        stats_file: args.stats_file.filter(|p| !p.as_os_str().is_empty()),
+        stats_token: args.stats_token.filter(|t| !t.is_empty()),
     };
+    if config
+        .stats_token
+        .as_ref()
+        .is_some_and(|t| t.len() < server::MIN_TOKEN_LEN)
+    {
+        return Err(Error::Schema(format!(
+            "the statistics token must be at least {} characters (try: openssl rand -hex 24)",
+            server::MIN_TOKEN_LEN
+        )));
+    }
     runtime()?.block_on(server::serve(config))?;
     Ok(0)
 }

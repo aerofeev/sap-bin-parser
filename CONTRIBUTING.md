@@ -17,7 +17,7 @@ rules goes into both, with a case in `tests/test_cross_implementation.py`.
 |---|---|
 | `src/sap_bin_parser/` | Python library and `sap-bin-py` CLI |
 | `rust/src/` | Rust engine, CLI, local app and web service |
-| `rust/web/` | The page: plain HTML, CSS and JavaScript, embedded in the binary. No build step, no dependencies |
+| `rust/web/` | The page and the usage dashboard: plain HTML and JavaScript, embedded in the binary, with no build step and no runtime dependencies. The stylesheet `app.css` is compiled from Tailwind CSS in `rust/web/styles/`; after changing the markup or the styles, run `npm install && npm run build:css` in `rust/web` and commit the result |
 | `tests/` | Python tests, including the cross-implementation suite |
 | `rust/web/tests/` | Browser end-to-end test (Playwright) |
 | `scripts/` | `compare.py` for real exports, `prove-stores-nothing.sh` |
@@ -32,6 +32,7 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release && pytest               # includes Rust-vs-Python parity
 scripts/prove-stores-nothing.sh               # Linux, needs strace
+cd rust/web && npm install && npm run build:css  # after changing the page's markup or styles
 cd rust/web/tests && npm install && npm test  # the page in Chromium
 ```
 

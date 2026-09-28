@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Usage statistics for the operator:** conversions, records and bytes by output format,
+  input, client, SAP table and day. They are private, behind a token
+  (`SAPBIN_STATS_TOKEN`), with a dashboard at `stats`, JSON at `api/stats`, and Prometheus
+  metrics at `metrics`. They can be kept across restarts in a file (`SAPBIN_STATS_FILE`),
+  which is then the only thing the service writes. Nothing in them identifies a person or
+  a file. The no-writes proof checks this too.
+- **Compressed downloads:** CSV, TSV and JSON Lines go over the wire as zstd (or gzip)
+  when the browser accepts it. Over the internet a conversion is limited by the network,
+  and the CSV shrinks four to five times.
+- The service stops cleanly on SIGTERM, as sent by `docker stop`, and saves its
+  statistics on the way out.
+
+### Changed
+
+- **A new look:** the page is styled with Tailwind CSS in the shadcn/ui manner, and uses
+  the Inter typeface, served from the binary like everything else. The Content-Security-
+  Policy allows fonts from the page's own origin only.
+
+### Fixed
+
+- Clicking a suggested record size right after typing one could re-inspect with the typed
+  size and swallow the click.
+
 ## 0.2.0
 
 A product rather than a script: the same parser as an app, a command line, a web

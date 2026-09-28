@@ -60,6 +60,13 @@ wait
 | `POST api/inspect` | описать выгрузку по multipart-части `head` (первые байты файла) и, по желанию, `tail`, `size`, `schema`, `record_size` |
 | `GET api/sample` | синтетическая выгрузка (`records`, `shards`) |
 | `GET api/config`, `GET healthz` | версия и ограничения |
+| `GET api/stats`, `GET metrics` | статистика использования в JSON или для Prometheus; с токеном оператора (`Authorization: Bearer ...`) и только если он задан |
+
+CSV, TSV и JSON Lines передаются сжатыми, если запрос это допускает (`Accept-Encoding`:
+zstd, иначе gzip); браузеры распаковывают их при сохранении. `curl` получает обычный файл,
+если не указать `--compressed`, а на медленном канале это стоит делать. Parquet и zip с
+шардами уже сжаты и передаются как есть. Для задания сжатие определяется заголовком
+`Accept-Encoding` запроса, который его создал.
 
 ## Параметры
 

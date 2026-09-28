@@ -31,3 +31,13 @@ The Python library converts the same data about 15 to 25 times slower, with iden
 output.
 
 Run `sap-bin bench` to measure your own machine.
+
+## Over the internet
+
+A conversion over the network is limited by the network, not by the engine. The CSV
+coming back is typically four times the size of the zip going up. So the service
+compresses text downloads (zstd, or gzip for browsers without it), which the browser undoes
+as it saves. On the synthetic sample, zstd makes the CSV 4.5 times smaller for no
+measurable cost: 1 million records in 0.35 s rather than 0.34 s. Real exports, with their
+repeated company codes and padded fields, usually shrink more. On a slow link, Parquet is
+smaller still. For no network at all, run the [app](cli.md).
