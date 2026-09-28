@@ -40,8 +40,10 @@ cd rust/web/tests && npm install && npm test  # the page in Chromium
 
 Bump the version in `rust/Cargo.toml` and `src/sap_bin_parser/__init__.py`, add a
 `CHANGELOG.md` entry, and push a tag `vX.Y.Z`. The release workflow builds the apps for
-Windows, macOS and Linux, publishes the Python package to PyPI and the image to GHCR.
+Windows, macOS and Linux and publishes them with the Python wheel and `sap-bin.pyz` as a
+GitHub release, the image goes to GHCR, and the Python package to PyPI once that is on.
 
-One-time setup for the maintainer: add a trusted publisher on PyPI for this repository
-(workflow `release.yml`, environment `pypi`), and create the `pypi` environment under
-Settings, Environments.
+Publishing to PyPI is off until the maintainer sets it up once: add a trusted publisher on
+PyPI for this repository (workflow `release.yml`, environment `pypi`), create the `pypi`
+environment under Settings, Environments, and set the repository variable `PYPI_PUBLISH` to
+`true` under Settings, Secrets and variables, Actions.
